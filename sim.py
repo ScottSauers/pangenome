@@ -18,20 +18,20 @@ DEFAULT_MUTATION_RATE = 0.01
 KEY_PATTERNS = ['ATCG', 'GCAT', 'TGCA', 'CGTA', 'TACG', 'GATC', 'CTAG', 'AGCT']
 
 def set_random_seed(seed: int = 6527612) -> None:
-    """Set random seed"""
+    """Set the random seed"""
     np.random.seed(seed)
 
 def create_sequence(length: int) -> str:
-    """Create random DNA sequence with given length"""
+    """Create a random DNA sequence of given length."""
     return ''.join(np.random.choice(BASE_NUCLEOTIDES, size=length))
 
 def mutate_sequence(sequence: str, mutation_rate: float = DEFAULT_MUTATION_RATE) -> str:
-    """Mutate DNA sequence given mutation rate"""
+    """Mutate a given DNA sequence with a specified mutation rate."""
     return ''.join(np.random.choice(BASE_NUCLEOTIDES) if np.random.random() < mutation_rate else base
                    for base in sequence)
 
 def create_pangenome_graph(n_base_seqs: int, seq_length: int, n_variants: int, n_snps: int) -> Tuple[nx.Graph, Dict[str, str], np.ndarray, np.ndarray]:
-    """Create a pangenome graph with params"""
+    """Create a pangenome graph with specified parameters."""
     G = nx.Graph()
     sequences = {}
     snp_positions = np.random.choice(seq_length, size=n_snps, replace=False)
@@ -63,17 +63,35 @@ def create_pangenome_graph(n_base_seqs: int, seq_length: int, n_variants: int, n
     return G, sequences, snp_positions, snp_effects
 
 def compute_laplacian(G: nx.Graph) -> np.ndarray:
-    """Compute the Laplacian matrix of the graph"""
+    """Compute the Laplacian matrix of the graph."""
     return nx.laplacian_matrix(G).toarray()
 
 def compute_eigenvectors(L: np.ndarray, k: int) -> np.ndarray:
-    """Compute the first k eigenvectors of the Laplacian matrix"""
+    """
+    Compute the first k eigenvectors of the Laplacian matrix.
+    
+    Args:
+    L (np.ndarray): The Laplacian matrix of the graph.
+    k (int): The number of eigenvectors to return.
+    
+    Returns:
+    np.ndarray: The k most important eigenvectors, sorted by importance (descending order of eigenvalues).
+    """
     eigenvalues, eigenvectors = linalg.eigh(L)
-    return eigenvectors[:, 1:k+1]
+    
+    # Sort eigenvectors by eigenvalues in descending order
+    idx = eigenvalues.argsort()[::-1]
+    eigenvalues = eigenvalues[idx]
+    eigenvectors = eigenvectors[:, idx]
+    
+    # Try keeping the smallest eigenvector
+
+    # Return the k most important eigenvectors
+    return eigenvectors[:, :k]
 
 def simulate_individuals(G: nx.Graph, n_individuals: int, node_embeddings: np.ndarray, 
                          sequences: Dict[str, str], snp_positions: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Simulate individuals based on the pangenome graph"""
+    """Simulate individuals based on the pangenome graph."""
     node_list = list(G.nodes())
     individuals, genotypes, snp_genotypes = [], [], []
     
@@ -94,7 +112,7 @@ def simulate_individuals(G: nx.Graph, n_individuals: int, node_embeddings: np.nd
 
 def create_phenotype_function(sequences: Dict[str, str], snp_positions: np.ndarray, 
                               snp_effects: np.ndarray, snp_weight: float = 1.0) -> Callable:
-    """Create a function to generate phenotypes based on genotypes and SNPs"""
+    """Create a function to generate phenotypes based on genotypes and SNPs."""
     pattern_weights = np.random.normal(1, 0.2, len(KEY_PATTERNS))
     
     def phenotype_function(genotypes: np.ndarray, node_list: List[str], snp_genotypes: np.ndarray) -> np.ndarray:
@@ -112,7 +130,7 @@ def create_phenotype_function(sequences: Dict[str, str], snp_positions: np.ndarr
     return phenotype_function
 
 def perform_gwas(X: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, float, np.ndarray, float]:
-    """Perform GWAS analysis"""
+    """Perform GWAS analysis."""
     n_snps = X.shape[1]
     betas, p_values = np.zeros(n_snps), np.zeros(n_snps)
     
@@ -135,7 +153,7 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, y_test: np.ndarray, y_pr
                  y_pred_normal: np.ndarray, coefficients_eigen: np.ndarray, coefficients_normal: np.ndarray, 
                  r_squared_eigen: float, r_squared_normal: float, p_values_eigen: np.ndarray, 
                  p_values_normal: np.ndarray, overall_p_eigen: float, overall_p_normal: float, filename: str) -> None:
-    """Plot the results of the GWAS analysis"""
+    """Plot the results of the GWAS analysis."""
     fig, axs = plt.subplots(2, 3, figsize=(24, 16))
     
     # Plot graph structure
@@ -197,7 +215,7 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, y_test: np.ndarray, y_pr
 
 def run_simulation(n_base_seqs: int, seq_length: int, n_variants: int, n_individuals: int, 
                    n_dimensions: int, n_snps: int, snp_weight: float) -> Tuple[float, float, float, float]:
-    """Run a single simulation with the given parameters"""
+    """Run a single simulation with the given parameters."""
     G, sequences, snp_positions, snp_effects = create_pangenome_graph(n_base_seqs, seq_length, n_variants, n_snps)
     node_list = list(G.nodes())
 
@@ -214,10 +232,14 @@ def run_simulation(n_base_seqs: int, seq_length: int, n_variants: int, n_individ
 
     coefficients_normal, _, p_values_normal, overall_p_normal = perform_gwas(X_train, y_train)
     coefficients_eigen, _, p_values_eigen, overall_p_eigen = perform_gwas(X_train_eigen, y_train_eigen)
+
     model_normal = LinearRegression().fit(X_train, y_train)
     y_pred_normal = stats.zscore(model_normal.predict(X_test))
     y_test = stats.zscore(y_test)
     r_squared_normal_full = r2_score(y_test, y_pred_normal)
+
+
+
     model_eigen = LinearRegression().fit(X_train_eigen, y_train_eigen)
     y_pred_eigen = stats.zscore(model_eigen.predict(X_test_eigen))
     y_test_eigen = stats.zscore(y_test_eigen)
@@ -231,7 +253,7 @@ def run_simulation(n_base_seqs: int, seq_length: int, n_variants: int, n_individ
 
 def compare_sample_sizes(n_base_seqs: int, seq_length: int, n_variants: int, max_individuals: int, 
                          n_dimensions: int, n_snps: int, snp_weight: float) -> None:
-    """Compare GWAS performance across different sample sizes"""
+    """Compare GWAS performance across different sample sizes."""
     sample_sizes = np.logspace(2, np.log10(max_individuals), num=15).astype(int)
     eigen_r2, normal_r2, eigen_p, normal_p = [], [], [], []
     
@@ -266,7 +288,7 @@ def compare_sample_sizes(n_base_seqs: int, seq_length: int, n_variants: int, max
     print("Sample size comparison plot saved as 'sample_size_comparison.png'")
 
 def main():
-    """Main execution function"""
+    """Main execution function."""
     set_random_seed()
     
     # Simulation parameters
