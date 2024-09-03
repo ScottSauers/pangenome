@@ -84,7 +84,7 @@ def compute_eigenvectors(L: np.ndarray, k: int) -> np.ndarray:
     eigenvalues = eigenvalues[idx]
     eigenvectors = eigenvectors[:, idx]
     
-    # Try keeping the smallest eigenvector
+    # Try keeping the smallest
 
     # Return the k most important eigenvectors
     return eigenvectors[:, :k]
@@ -286,6 +286,7 @@ def compare_sample_sizes(n_base_seqs: int, seq_length: int, n_variants: int, max
     plt.savefig("sample_size_comparison.png")
     plt.close()
     print("Sample size comparison plot saved as 'sample_size_comparison.png'")
+    os.system(f"open sample_size_comparison.png")
 
 def main():
     """Main execution function."""
@@ -296,10 +297,10 @@ def main():
         'n_base_seqs': 10,
         'seq_length': 1000,
         'n_variants': 50,
-        'max_individuals': 20000,
+        'max_individuals': 1000,
         'n_dimensions': 50,
         'n_snps': 50,
-        'snp_weight': 0.5
+        'snp_weight': 1
     }
     
     print("Starting pangenome GWAS simulation...")
