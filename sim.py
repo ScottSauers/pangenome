@@ -141,74 +141,118 @@ def perform_gwas(X: np.ndarray, y: np.ndarray) -> Tuple[LinearRegression, np.nda
     
     return model, betas, p_values
 
+
+
+
+
+
+
 def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, y_test: np.ndarray, y_pred_eigen: np.ndarray, 
                  y_pred_normal: np.ndarray, coefficients_eigen: np.ndarray, coefficients_normal: np.ndarray, 
                  r_squared_eigen: float, r_squared_normal: float, p_values_eigen: np.ndarray, 
-                 p_values_normal: np.ndarray, overall_p_eigen: float, overall_p_normal: float, filename: str) -> None:
+                 p_values_normal: np.ndarray, overall_p_eigen: float, overall_p_normal: float, 
+                 genotypes: np.ndarray, node_list: List[str], filename: str) -> None:
+
     """Plot the results of the GWAS analysis."""
-    fig, axs = plt.subplots(2, 3, figsize=(24, 16))
+    fig, axs = plt.subplots(3, 3, figsize=(24, 24))
+
+    fig.suptitle(f"Eigenvector GWAS R² = {r_squared_eigen:.4f} (p = {overall_p_eigen:.2e})\n"
+                 f"Normal GWAS R² = {r_squared_normal:.4f} (p = {overall_p_normal:.2e})")
     
-    # Plot graph structure
     pos = nx.spring_layout(G)
+    
+    # Main pangenome plot
+    axs[0, 0].set_title("Pangenome Graph Structure")
     nx.draw(G, pos, ax=axs[0, 0], node_color=['blue' if node.startswith('base') else 'red' for node in G.nodes()], 
             node_size=20, with_labels=False)
-    axs[0, 0].set_title("Pangenome Graph Structure")
+    
+    # Individual genomes
+    axs[0, 1].set_title("Individual Genomes")
+    num_individuals = min(3, len(genotypes))
+    random_individuals = np.random.choice(len(genotypes), num_individuals, replace=False)
+    for i, idx in enumerate(random_individuals):
+        individual_genome = genotypes[idx]
+        individual_graph = nx.Graph()
+        for j, present in enumerate(individual_genome):
+            if present:
+                individual_graph.add_node(node_list[j])
+                if j > 0 and individual_genome[j-1]:
+                    individual_graph.add_edge(node_list[j-1], node_list[j])
+        
+        ax_inset = axs[0, 1].inset_axes([0.05, 0.7 - i*0.3, 0.9, 0.25])
+        nx.draw(individual_graph, pos, ax=ax_inset, 
+            node_color=['blue' if node.startswith('base') else 'red' for node in individual_graph.nodes()],
+            node_size=5, with_labels=False)
+        ax_inset.set_title(f"Individual {idx}", fontsize=8)
+        ax_inset.axis('off')
+    axs[0, 1].axis('off')
 
-    # Plot coefficient strengths for eigenvector GWAS
-    axs[0, 1].bar(range(1, len(coefficients_eigen)+1), coefficients_eigen)
-    axs[0, 1].set_title("Eigenvector GWAS Coefficient Strengths")
-    axs[0, 1].set_xlabel("Embedding Dimension")
-    axs[0, 1].set_ylabel("Coefficient")
+    # Plot effect sizes for both GWAS methods
+    x = range(1, len(coefficients_eigen)+1)
+    axs[0, 2].bar(x, coefficients_eigen, alpha=0.5, label='Eigenvector GWAS', color='blue')
+    axs[0, 2].bar(x, coefficients_normal, alpha=0.5, label='Normal GWAS', color='red')
+    axs[0, 2].set_title("GWAS Effect Sizes")
+    axs[0, 2].set_xlabel("SNP / Eigenvector Index")
+    axs[0, 2].set_ylabel("Effect Size")
+    axs[0, 2].legend()
+    axs[0, 2].axhline(y=0, color='k', linestyle='--')
+
+
 
     # Plot phenotype distribution
-    sns.histplot(y_test, kde=True, ax=axs[0, 2])
-    axs[0, 2].set_title("Phenotype Distribution (Test Set)")
-    axs[0, 2].set_xlabel("Phenotype Value")
-    axs[0, 2].set_ylabel("Frequency")
+    sns.histplot(y_test, kde=True, ax=axs[1, 1])
+    axs[1, 1].set_title("Phenotype Distribution (Test Set)")
+    axs[1, 1].set_xlabel("Phenotype Value")
+    axs[1, 1].set_ylabel("Frequency")
 
     # Plot predicted vs actual phenotype for both GWAS methods
-    axs[1, 0].scatter(y_test, y_pred_eigen, alpha=0.5, label='Eigenvector GWAS', color='blue')
-    axs[1, 0].scatter(y_test, y_pred_normal, alpha=0.5, label='Normal GWAS', color='red')
-    axs[1, 0].plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 'k--')
-    axs[1, 0].set_title("Predicted vs Actual Phenotype")
-    axs[1, 0].set_xlabel("Actual Phenotype")
-    axs[1, 0].set_ylabel("Predicted Phenotype")
-    axs[1, 0].legend()
+    axs[1, 2].scatter(y_test, y_pred_eigen, alpha=0.5, label='Eigenvector GWAS', color='blue')
+    axs[1, 2].scatter(y_test, y_pred_normal, alpha=0.5, label='Normal GWAS', color='red')
+    axs[1, 2].plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 'k--')
+    axs[1, 2].set_title("Predicted vs Actual Phenotype")
+    axs[1, 2].set_xlabel("Actual Phenotype")
+    axs[1, 2].set_ylabel("Predicted Phenotype")
+    axs[1, 2].legend()
 
     # Plot HDBSCAN clustering and scatterplot
     if X_test_eigen.shape[0] > 5:  # Only perform clustering if we have enough samples
         clusterer = HDBSCAN(min_cluster_size=min(5, X_test_eigen.shape[0]))
         cluster_labels = clusterer.fit_predict(X_test_eigen)
-        scatter = axs[1, 1].scatter(X_test_eigen[:, 0], X_test_eigen[:, 1], c=y_test, cmap='viridis')
+        scatter = axs[2, 0].scatter(X_test_eigen[:, 0], X_test_eigen[:, 1], c=y_test, cmap='viridis')
         unique_labels = set(cluster_labels)
         colors = plt.cm.get_cmap('rainbow')(np.linspace(0, 1, len(unique_labels) - 1))
         for k, col in zip(sorted(list(unique_labels - {-1})), colors):
             class_member_mask = (cluster_labels == k)
             xy = X_test_eigen[class_member_mask, 0:2]
-            axs[1, 1].scatter(xy[:, 0], xy[:, 1], s=50, facecolors='none', edgecolors=col, linewidth=0.6, alpha=0.5)
-        axs[1, 1].set_title("Individual Embeddings (HDBSCAN Clustering)")
+            axs[2, 0].scatter(xy[:, 0], xy[:, 1], s=50, facecolors='none', edgecolors=col, linewidth=0.6, alpha=0.5)
+        axs[2, 0].set_title("Individual Embeddings (HDBSCAN Clustering)")
     else:
-        scatter = axs[1, 1].scatter(X_test_eigen[:, 0], X_test_eigen[:, 1], c=y_test, cmap='viridis')
-        axs[1, 1].set_title("Individual Embeddings (Scatter Plot)")
+        scatter = axs[2, 0].scatter(X_test_eigen[:, 0], X_test_eigen[:, 1], c=y_test, cmap='viridis')
+        axs[2, 0].set_title("Individual Embeddings (Scatter Plot)")
     
-    axs[1, 1].set_xlabel("Dimension 1")
-    axs[1, 1].set_ylabel("Dimension 2")
-    plt.colorbar(scatter, ax=axs[1, 1], label='Phenotype')
+    axs[2, 0].set_xlabel("Dimension 1")
+    axs[2, 0].set_ylabel("Dimension 2")
+    plt.colorbar(scatter, ax=axs[2, 0], label='Phenotype')
 
     # Plot p-values for both GWAS methods
-    axs[1, 2].bar(range(1, len(p_values_eigen)+1), -np.log10(p_values_eigen), alpha=0.5, label='Eigenvector GWAS')
-    axs[1, 2].bar(range(1, len(p_values_normal)+1), -np.log10(p_values_normal), alpha=0.5, label='Normal GWAS')
-    axs[1, 2].set_title("GWAS -log10(p-values)")
-    axs[1, 2].set_xlabel("SNP / Embedding Dimension")
-    axs[1, 2].set_ylabel("-log10(p-value)")
-    axs[1, 2].axhline(-np.log10(0.05), color='r', linestyle='--', label='p=0.05')
-    axs[1, 2].legend()
+    axs[2, 1].bar(range(1, len(p_values_eigen)+1), -np.log10(p_values_eigen), alpha=0.5, label='Eigenvector GWAS')
+    axs[2, 1].bar(range(1, len(p_values_normal)+1), -np.log10(p_values_normal), alpha=0.5, label='Normal GWAS')
+    axs[2, 1].set_title("GWAS -log10(p-values)")
+    axs[2, 1].set_xlabel("SNP / Embedding Dimension")
+    axs[2, 1].set_ylabel("-log10(p-value)")
+    axs[2, 1].axhline(-np.log10(0.05), color='r', linestyle='--', label='p=0.05')
+    axs[2, 1].legend()
+
+    # Clear the unused subplot
+    fig.delaxes(axs[2, 2])
     
     plt.suptitle(f"Eigenvector GWAS R² = {r_squared_eigen:.4f} (p = {overall_p_eigen:.2e})\n"
                  f"Normal GWAS R² = {r_squared_normal:.4f} (p = {overall_p_normal:.2e})")
     plt.tight_layout()
     plt.savefig(filename)
     plt.close()
+
+
 
 def run_simulation(n_base_seqs: int, seq_length: int, n_variants: int, n_individuals: int, 
                    n_dimensions: int, n_snps: int, snp_weight: float) -> Tuple[float, float, float, float]:
@@ -250,9 +294,8 @@ def run_simulation(n_base_seqs: int, seq_length: int, n_variants: int, n_individ
 
     filename = f"results_{n_individuals}.png"
     plot_results(G, X_test_eigen, y_test, y_pred_eigen, y_pred_normal, coefficients_eigen, coefficients_normal, 
-                 r_squared_eigen_full, r_squared_normal_full, p_values_eigen, p_values_normal, overall_p_eigen, overall_p_normal, filename)
-
-
+                 r_squared_eigen_full, r_squared_normal_full, p_values_eigen, p_values_normal, 
+                 overall_p_eigen, overall_p_normal, genotypes, node_list, filename)
 
     os.system(f"open {filename}")
     return r_squared_eigen_full, r_squared_normal_full, overall_p_eigen, overall_p_normal
@@ -307,12 +350,12 @@ def main():
     
     # Simulation parameters
     params = {
-        'n_base_seqs': 10,
-        'seq_length': 1000,
-        'n_variants': 50,
-        'max_individuals': 100000,
-        'n_dimensions': 50,
-        'n_snps': 50,
+        'n_base_seqs': 50, # Backbone of pangenome graph
+        'seq_length': 200, # How long each base sequence is
+        'n_variants': 50, # Randomly mutate 50 letters. Creates variants which indviduals may or may not have
+        'max_individuals': 10000,
+        'n_dimensions': 50, # Maximum number of dimensions equals the number of nodes in the graph 
+        'n_snps': 50, # How many letters may end up influencing phenotype
         'snp_weight': 1
     }
     
