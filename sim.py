@@ -34,7 +34,7 @@ def create_pangenome_graph(n_base_seqs: int, seq_length: int, n_variants: int, n
     """Create a pangenome graph with specified parameters."""
     G = nx.Graph()
     sequences = {}
-    snp_positions = np.random.choice(seq_length, size=n_snps, replace=False)
+    snp_positions = np.random.choice(seq_length, size=n_snps, replace=False) # Defines where SNPs can occur
     snp_effects = np.random.normal(0, 1, n_snps)
     
     # Create base sequences
@@ -89,20 +89,44 @@ def compute_eigenvectors(L: np.ndarray, k: int) -> np.ndarray:
     # Return the k most important eigenvectors
     return eigenvectors[:, :k]
 
+
 def simulate_individuals(G: nx.Graph, n_individuals: int, node_embeddings: np.ndarray, 
-                         sequences: Dict[str, str], snp_positions: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+                         sequences: Dict[str, str], snp_positions: np.ndarray, 
+                         random_snp_ratio: float = 0.95) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Simulate individuals based on the pangenome graph."""
     node_list = list(G.nodes())
     individuals, genotypes, snp_genotypes = [], [], []
     
+    # Determine which SNPs will be random vs. sequence-based
+    n_snps = len(snp_positions)
+    is_random_snp = np.random.random(n_snps) < random_snp_ratio
+    
+    # Generate random SNPs
+    random_snps = np.random.choice([0, 1, 2], size=n_snps)
+    
     for _ in range(n_individuals):
+        # Generate individual nodes
         individual_nodes = [node for node in node_list if node.startswith("base_")]
         individual_nodes += [node for node in node_list if node.startswith("variant_") and np.random.random() < 0.5]
-        genotype = [1 if node in individual_nodes else 0 for node in node_list]
+        
+        # Generate genotype
+        genotype = np.array([1 if node in individual_nodes else 0 for node in node_list])
+        
+        # Calculate individual embedding
         individual_embedding = node_embeddings[[node_list.index(node) for node in individual_nodes]].mean(axis=0)
         
-        snp_genotype = [sum(1 for allele in [sequences[node][pos] for node in individual_nodes] if allele != sequences[individual_nodes[0]][pos])
-                        for pos in snp_positions]
+        # Generate SNP genotypes
+        snp_genotype = []
+        for i, pos in enumerate(snp_positions):
+            if is_random_snp[i]:
+                # Use pre-generated random SNP
+                snp = random_snps[i]
+            else:
+                # Based on sequences
+                sequence_genotype = [sequences[node][pos] for node in individual_nodes]
+                reference_allele = sequences[individual_nodes[0]][pos]
+                snp = sum(1 for allele in sequence_genotype if allele != reference_allele)
+            snp_genotype.append(snp)
         
         individuals.append(individual_embedding)
         genotypes.append(genotype)
@@ -129,21 +153,21 @@ def create_phenotype_function(sequences: Dict[str, str], snp_positions: np.ndarr
     
     return phenotype_function
 
+
 def perform_gwas(X: np.ndarray, y: np.ndarray) -> Tuple[LinearRegression, np.ndarray, np.ndarray]:
     n_features = X.shape[1]
     betas, p_values = np.zeros(n_features), np.zeros(n_features)
     
     for i in range(n_features):
-        slope, _, _, p_value, _ = stats.linregress(X[:, i], y)
-        betas[i], p_values[i] = slope, p_value
+        if np.all(X[:, i] == X[0, i]):  # Check if all values in the column are the same
+            betas[i], p_values[i] = 0, 1
+        else:
+            slope, intercept, r_value, p_value, std_err = stats.linregress(X[:, i], y)
+            betas[i], p_values[i] = slope, max(p_value, np.finfo(float).tiny)
     
     model = LinearRegression().fit(X, y)
     
     return model, betas, p_values
-
-
-
-
 
 
 
@@ -156,15 +180,57 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, y_test: np.ndarray, y_pr
     """Plot the results of the GWAS analysis."""
     fig, axs = plt.subplots(3, 3, figsize=(24, 24))
 
-    fig.suptitle(f"Eigenvector GWAS R² = {r_squared_eigen:.4f} (p = {overall_p_eigen:.2e})\n"
-                 f"Normal GWAS R² = {r_squared_normal:.4f} (p = {overall_p_normal:.2e})")
+    def format_p_value(p_value):
+        if np.isnan(p_value):
+            return "NaN"
+        elif p_value < 1e-4:
+            return f"{p_value:.2e}"
+        else:
+            return f"{p_value:.4f}"
+
+    fig.suptitle(f"Eigenvector GWAS R² = {r_squared_eigen:.4f} (p = {format_p_value(overall_p_eigen)})\n"
+                 f"Normal GWAS R² = {r_squared_normal:.4f} (p = {format_p_value(overall_p_normal)})")
+        
+
+
+    # Create a custom layout
+    pos = {}
+    base_nodes = sorted([node for node in G.nodes() if node.startswith('base')], key=lambda x: int(x.split('_')[1]))
+    variant_nodes = [node for node in G.nodes() if node.startswith('variant')]
     
-    pos = nx.spring_layout(G)
+    # Position base nodes along a curved line
+    t = np.linspace(0, np.pi, len(base_nodes))
+    x = t
+    y = 0.2 * np.sin(t)
+    for i, node in enumerate(base_nodes):
+        pos[node] = (x[i], y[i])
+    
+    # Position variant nodes
+    for i, node in enumerate(variant_nodes):
+        base_connections = [n for n in G.neighbors(node) if n.startswith('base')]
+        if base_connections:
+            base_x, base_y = pos[base_connections[0]]
+            angle = np.random.uniform(-np.pi/3, np.pi/3)
+            distance = 0.1 + 0.1 * np.random.random()
+            pos[node] = (base_x + distance * np.cos(angle), base_y + distance * np.sin(angle))
+        else:
+            pos[node] = (np.random.random(), np.random.random())
     
     # Main pangenome plot
     axs[0, 0].set_title("Pangenome Graph Structure")
-    nx.draw(G, pos, ax=axs[0, 0], node_color=['blue' if node.startswith('base') else 'red' for node in G.nodes()], 
-            node_size=20, with_labels=False)
+    nx.draw_networkx_nodes(G, pos, ax=axs[0, 0], node_color=['blue' if node.startswith('base') else 'red' for node in G.nodes()], 
+                           node_size=[50 if node.startswith('base') else 30 for node in G.nodes()])
+    edge_colors = ['black' if 'base' in u and 'base' in v else 'gray' for u, v in G.edges()]
+    edge_widths = [3 if 'base' in u and 'base' in v else 1 for u, v in G.edges()]
+    for (u, v), color, width in zip(G.edges(), edge_colors, edge_widths):
+        axs[0, 0].annotate("", xy=pos[v], xytext=pos[u],
+                           arrowprops=dict(arrowstyle="-", color=color, 
+                                           connectionstyle="arc3,rad=0.1",
+                                           linewidth=width))
+
+    axs[0, 0].axis('off')
+
+
     
     # Individual genomes
     axs[0, 1].set_title("Individual Genomes")
@@ -220,7 +286,8 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, y_test: np.ndarray, y_pr
         cluster_labels = clusterer.fit_predict(X_test_eigen)
         scatter = axs[2, 0].scatter(X_test_eigen[:, 0], X_test_eigen[:, 1], c=y_test, cmap='viridis')
         unique_labels = set(cluster_labels)
-        colors = plt.cm.get_cmap('rainbow')(np.linspace(0, 1, len(unique_labels) - 1))
+        colors = plt.colormaps['rainbow'](np.linspace(0, 1, len(unique_labels) - 1))
+
         for k, col in zip(sorted(list(unique_labels - {-1})), colors):
             class_member_mask = (cluster_labels == k)
             xy = X_test_eigen[class_member_mask, 0:2]
@@ -246,9 +313,11 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, y_test: np.ndarray, y_pr
     # Clear the unused subplot
     fig.delaxes(axs[2, 2])
     
-    plt.suptitle(f"Eigenvector GWAS R² = {r_squared_eigen:.4f} (p = {overall_p_eigen:.2e})\n"
-                 f"Normal GWAS R² = {r_squared_normal:.4f} (p = {overall_p_normal:.2e})")
-    plt.tight_layout()
+    plt.suptitle(f"Eigenvector GWAS R² = {r_squared_eigen:.4f} (p = {format_p_value(overall_p_eigen)})\n"
+                 f"Normal GWAS R² = {r_squared_normal:.4f} (p = {format_p_value(overall_p_normal)})",
+                 fontsize=16, y=0.95)
+
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     plt.savefig(filename)
     plt.close()
 
@@ -279,18 +348,19 @@ def run_simulation(n_base_seqs: int, seq_length: int, n_variants: int, n_individ
     y_pred_normal = model_normal.predict(X_test)
     y_pred_eigen = model_eigen.predict(X_test_eigen)
 
-    r_squared_normal_full = r2_score(y_test, y_pred_normal)
-    r_squared_eigen_full = r2_score(y_test_eigen, y_pred_eigen)
-
-
+    if len(y_test) > 1:
+        r_squared_normal_full = r2_score(y_test, y_pred_normal)
+        r_squared_eigen_full = r2_score(y_test_eigen, y_pred_eigen)
+    else:
+        r_squared_normal_full = r_squared_eigen_full = np.nan
     n_test = X_test.shape[0]
     n_features = X_test.shape[1]
 
     f_stat_normal = (r_squared_normal_full / (1 - r_squared_normal_full)) * ((n_test - n_features - 1) / n_features)
-    overall_p_normal = 1 - stats.f.cdf(f_stat_normal, n_features, n_test - n_features - 1)
+    overall_p_normal = max(1 - stats.f.cdf(f_stat_normal, n_features, n_test - n_features - 1), np.finfo(float).tiny)
 
     f_stat_eigen = (r_squared_eigen_full / (1 - r_squared_eigen_full)) * ((n_test - n_features - 1) / n_features)
-    overall_p_eigen = 1 - stats.f.cdf(f_stat_eigen, n_features, n_test - n_features - 1)
+    overall_p_eigen = max(1 - stats.f.cdf(f_stat_eigen, n_features, n_test - n_features - 1), np.finfo(float).tiny)
 
     filename = f"results_{n_individuals}.png"
     plot_results(G, X_test_eigen, y_test, y_pred_eigen, y_pred_normal, coefficients_eigen, coefficients_normal, 
@@ -330,8 +400,8 @@ def compare_sample_sizes(n_base_seqs: int, seq_length: int, n_variants: int, max
     ax1.legend()
     ax1.grid(True, linestyle='--', alpha=0.7)
     
-    ax2.semilogx(sample_sizes, -np.log10(eigen_p), label='Eigenvector GWAS')
-    ax2.semilogx(sample_sizes, -np.log10(normal_p), label='Normal GWAS')
+    ax2.semilogx(sample_sizes, [-np.log10(p) if not np.isnan(p) and p > 0 else 0 for p in eigen_p], label='Eigenvector GWAS')
+    ax2.semilogx(sample_sizes, [-np.log10(p) if not np.isnan(p) and p > 0 else 0 for p in normal_p], label='Normal GWAS')
     ax2.set_xlabel('Number of Individuals (log scale)')
     ax2.set_ylabel('-log10(p-value)')
     ax2.set_title('Significance vs Sample Size')
@@ -350,10 +420,10 @@ def main():
     
     # Simulation parameters
     params = {
-        'n_base_seqs': 50, # Backbone of pangenome graph
+        'n_base_seqs': 20, # Backbone of pangenome graph
         'seq_length': 200, # How long each base sequence is
-        'n_variants': 50, # Randomly mutate 50 letters. Creates variants which indviduals may or may not have
-        'max_individuals': 10000,
+        'n_variants': 50, # Randomly mutate letters. Creates variants which indviduals may or may not have
+        'max_individuals': 50000,
         'n_dimensions': 50, # Maximum number of dimensions equals the number of nodes in the graph 
         'n_snps': 50, # How many letters may end up influencing phenotype
         'snp_weight': 1
