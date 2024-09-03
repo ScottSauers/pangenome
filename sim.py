@@ -129,25 +129,17 @@ def create_phenotype_function(sequences: Dict[str, str], snp_positions: np.ndarr
     
     return phenotype_function
 
-def perform_gwas(X: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, float, np.ndarray, float]:
-    """Perform GWAS analysis."""
-    n_snps = X.shape[1]
-    betas, p_values = np.zeros(n_snps), np.zeros(n_snps)
+def perform_gwas(X: np.ndarray, y: np.ndarray) -> Tuple[LinearRegression, np.ndarray, np.ndarray]:
+    n_features = X.shape[1]
+    betas, p_values = np.zeros(n_features), np.zeros(n_features)
     
-    for i in range(n_snps):
+    for i in range(n_features):
         slope, _, _, p_value, _ = stats.linregress(X[:, i], y)
         betas[i], p_values[i] = slope, p_value
     
     model = LinearRegression().fit(X, y)
-    y_pred = stats.zscore(model.predict(X))
-    y = stats.zscore(y)
-    r_squared = r2_score(y, y_pred)
     
-    n = X.shape[0]
-    f_stat = (r_squared * (n - n_snps - 1)) / ((1 - r_squared) * n_snps)
-    overall_p_value = 1 - stats.f.cdf(f_stat, n_snps, n - n_snps - 1)
-    
-    return betas, r_squared, p_values, overall_p_value
+    return model, betas, p_values
 
 def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, y_test: np.ndarray, y_pred_eigen: np.ndarray, 
                  y_pred_normal: np.ndarray, coefficients_eigen: np.ndarray, coefficients_normal: np.ndarray, 
@@ -183,17 +175,22 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, y_test: np.ndarray, y_pr
     axs[1, 0].set_ylabel("Predicted Phenotype")
     axs[1, 0].legend()
 
-    # Plot HDBSCAN clustering
-    clusterer = HDBSCAN(min_cluster_size=5)
-    cluster_labels = clusterer.fit_predict(X_test_eigen)
-    scatter = axs[1, 1].scatter(X_test_eigen[:, 0], X_test_eigen[:, 1], c=y_test, cmap='viridis')
-    unique_labels = set(cluster_labels)
-    colors = plt.cm.get_cmap('rainbow')(np.linspace(0, 1, len(unique_labels) - 1))
-    for k, col in zip(sorted(list(unique_labels - {-1})), colors):
-        class_member_mask = (cluster_labels == k)
-        xy = X_test_eigen[class_member_mask, 0:2]
-        axs[1, 1].scatter(xy[:, 0], xy[:, 1], s=50, facecolors='none', edgecolors=col, linewidth=0.6, alpha=0.5)
-    axs[1, 1].set_title("Individual Embeddings (HDBSCAN Clustering)")
+    # Plot HDBSCAN clustering and scatterplot
+    if X_test_eigen.shape[0] > 5:  # Only perform clustering if we have enough samples
+        clusterer = HDBSCAN(min_cluster_size=min(5, X_test_eigen.shape[0]))
+        cluster_labels = clusterer.fit_predict(X_test_eigen)
+        scatter = axs[1, 1].scatter(X_test_eigen[:, 0], X_test_eigen[:, 1], c=y_test, cmap='viridis')
+        unique_labels = set(cluster_labels)
+        colors = plt.cm.get_cmap('rainbow')(np.linspace(0, 1, len(unique_labels) - 1))
+        for k, col in zip(sorted(list(unique_labels - {-1})), colors):
+            class_member_mask = (cluster_labels == k)
+            xy = X_test_eigen[class_member_mask, 0:2]
+            axs[1, 1].scatter(xy[:, 0], xy[:, 1], s=50, facecolors='none', edgecolors=col, linewidth=0.6, alpha=0.5)
+        axs[1, 1].set_title("Individual Embeddings (HDBSCAN Clustering)")
+    else:
+        scatter = axs[1, 1].scatter(X_test_eigen[:, 0], X_test_eigen[:, 1], c=y_test, cmap='viridis')
+        axs[1, 1].set_title("Individual Embeddings (Scatter Plot)")
+    
     axs[1, 1].set_xlabel("Dimension 1")
     axs[1, 1].set_ylabel("Dimension 2")
     plt.colorbar(scatter, ax=axs[1, 1], label='Phenotype')
@@ -230,31 +227,47 @@ def run_simulation(n_base_seqs: int, seq_length: int, n_variants: int, n_individ
     X_train, X_test, y_train, y_test = train_test_split(snp_genotypes, phenotypes, test_size=0.2, random_state=42)
     X_train_eigen, X_test_eigen, y_train_eigen, y_test_eigen = train_test_split(individuals, phenotypes, test_size=0.2, random_state=42)
 
-    coefficients_normal, _, p_values_normal, overall_p_normal = perform_gwas(X_train, y_train)
-    coefficients_eigen, _, p_values_eigen, overall_p_eigen = perform_gwas(X_train_eigen, y_train_eigen)
 
-    model_normal = LinearRegression().fit(X_train, y_train)
-    y_pred_normal = stats.zscore(model_normal.predict(X_test))
-    y_test = stats.zscore(y_test)
+
+    model_normal, coefficients_normal, p_values_normal = perform_gwas(X_train, y_train)
+    model_eigen, coefficients_eigen, p_values_eigen = perform_gwas(X_train_eigen, y_train_eigen)
+
+    y_pred_normal = model_normal.predict(X_test)
+    y_pred_eigen = model_eigen.predict(X_test_eigen)
+
     r_squared_normal_full = r2_score(y_test, y_pred_normal)
-
-
-
-    model_eigen = LinearRegression().fit(X_train_eigen, y_train_eigen)
-    y_pred_eigen = stats.zscore(model_eigen.predict(X_test_eigen))
-    y_test_eigen = stats.zscore(y_test_eigen)
     r_squared_eigen_full = r2_score(y_test_eigen, y_pred_eigen)
+
+
+    n_test = X_test.shape[0]
+    n_features = X_test.shape[1]
+
+    f_stat_normal = (r_squared_normal_full / (1 - r_squared_normal_full)) * ((n_test - n_features - 1) / n_features)
+    overall_p_normal = 1 - stats.f.cdf(f_stat_normal, n_features, n_test - n_features - 1)
+
+    f_stat_eigen = (r_squared_eigen_full / (1 - r_squared_eigen_full)) * ((n_test - n_features - 1) / n_features)
+    overall_p_eigen = 1 - stats.f.cdf(f_stat_eigen, n_features, n_test - n_features - 1)
 
     filename = f"results_{n_individuals}.png"
     plot_results(G, X_test_eigen, y_test, y_pred_eigen, y_pred_normal, coefficients_eigen, coefficients_normal, 
                  r_squared_eigen_full, r_squared_normal_full, p_values_eigen, p_values_normal, overall_p_eigen, overall_p_normal, filename)
+
+
+
     os.system(f"open {filename}")
     return r_squared_eigen_full, r_squared_normal_full, overall_p_eigen, overall_p_normal
 
 def compare_sample_sizes(n_base_seqs: int, seq_length: int, n_variants: int, max_individuals: int, 
                          n_dimensions: int, n_snps: int, snp_weight: float) -> None:
     """Compare GWAS performance across different sample sizes."""
-    sample_sizes = np.logspace(2, np.log10(max_individuals), num=15).astype(int)
+    min_individuals = 4  # Set min number of individuals
+    num_steps = 10  # Number of steps between min and max
+    
+    # Create a log space between min_individuals and max_individuals
+    sample_sizes = np.logspace(np.log10(min_individuals), np.log10(max_individuals), num=num_steps).astype(int)
+    
+    sample_sizes = np.unique(sample_sizes)
+
     eigen_r2, normal_r2, eigen_p, normal_p = [], [], [], []
     
     for n_individuals in tqdm(sample_sizes, desc="Simulating different sample sizes"):
@@ -297,7 +310,7 @@ def main():
         'n_base_seqs': 10,
         'seq_length': 1000,
         'n_variants': 50,
-        'max_individuals': 1000,
+        'max_individuals': 100000,
         'n_dimensions': 50,
         'n_snps': 50,
         'snp_weight': 1
