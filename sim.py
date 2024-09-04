@@ -102,12 +102,15 @@ def create_pangenome_graph(n_base_seqs: int, seq_length: int, n_variants: int, n
     snp_positions = np.random.choice(seq_length, size=n_snps, replace=False)
     snp_effects = np.random.normal(0, 1, n_snps)
     
+    node_id_counter = 0  # Initialize node ID counter
+
     # Create base sequences
     for i in range(n_base_seqs):
         seq = create_sequence(seq_length)
         node_name = f"base_{i}"
-        G.add_node(node_name, sequence=seq, position=i)
+        G.add_node(node_name, sequence=seq, position=i, id=node_id_counter)  # Add unique ID to node
         sequences[node_name] = seq
+        node_id_counter += 1  # Increment ID counter
         if i > 0:
             G.add_edge(f"base_{i-1}", node_name)
 
@@ -128,8 +131,9 @@ def create_pangenome_graph(n_base_seqs: int, seq_length: int, n_variants: int, n
                 node_name = f"{branch_type}_{variant_counter}"
                 variant_counter += 1
                 position = start_position + j
-                G.add_node(node_name, sequence=var_seq, position=position)
+                G.add_node(node_name, sequence=var_seq, position=position, id=node_id_counter) # Add unique ID to variant nodes 
                 sequences[node_name] = var_seq
+                node_id_counter += 1  # Increment ID counter
                 G.add_edge(prev_node, node_name)
                 prev_node = node_name
 
@@ -243,9 +247,9 @@ def simulate_individuals(G: nx.DiGraph, n_individuals: int, node_embeddings: np.
         individual_path = generate_individual_path(G, target_length)
         individual_paths.append(individual_path)
         
-        # Generate genotype
-        genotype = np.array([1 if node in individual_path else 0 for node in node_list])
-        
+        # Generate genotype (using node IDs)
+        genotype = np.array([1 if any(G.nodes[node]['id'] == G.nodes[path_node]['id'] for path_node in individual_path) else 0 for node in node_list])
+
         # Calculate individual embedding
         path_indices = [node_list.index(node) for node in individual_path]
         individual_embedding = node_embeddings[path_indices].sum(axis=0)  # Changed from mean to sum
@@ -296,16 +300,48 @@ def create_phenotype_function(sequences: Dict[str, str], snp_positions: np.ndarr
 def perform_gwas(X: np.ndarray, y: np.ndarray) -> Tuple[LinearRegression, np.ndarray, np.ndarray]:
     n_features = X.shape[1]
     betas, p_values = np.zeros(n_features), np.zeros(n_features)
-    
+
+    # Replace NaN values with zero in X
+    X = np.nan_to_num(X, nan=0.0)
+
+    # Check for infinite values in X
+    if np.any(np.isinf(X)):
+        print("Warning: Input X contains infinite values.")
+        inf_cols = np.where(np.any(np.isinf(X), axis=0))[0]
+        print(f"Indices of columns with infinite values: {inf_cols}")
+        for col in inf_cols:
+            print(f"Column {col}: {X[:, col][np.isinf(X[:, col])]}")
+
+    # Check for NaN values in X (after replacement)
+    if np.any(np.isnan(X)):
+        print("Warning: Input X still contains NaN values after replacement.")
+        nan_cols = np.where(np.any(np.isnan(X), axis=0))[0]
+        print(f"Indices of columns with NaN values: {nan_cols}")
+        for col in nan_cols:
+            nan_values = X[:, col][np.isnan(X[:, col])]
+            print(f"Column {col}: {nan_values}")
+            print(f"Number of NaN values in column {col}: {len(nan_values)}")
+
+    # Check for infinite values in y
+    if np.any(np.isinf(y)):
+        print("Warning: Input y contains infinite values.")
+        print(f"Infinite values in y: {y[np.isinf(y)]}")
+
+    # Check for NaN values in y
+    if np.any(np.isnan(y)):
+        print("Warning: Input y contains NaN values.")
+        print(f"NaN values in y: {y[np.isnan(y)]}")
+        print(f"Number of NaN values in y: {np.sum(np.isnan(y))}")
+
     for i in range(n_features):
         if np.all(X[:, i] == X[0, i]):  # Check if all values in the column are the same
             betas[i], p_values[i] = 0, 1
         else:
             slope, intercept, r_value, p_value, std_err = stats.linregress(X[:, i], y)
             betas[i], p_values[i] = slope, max(p_value, np.finfo(float).tiny)
-    
+
     model = LinearRegression().fit(X, y)
-    
+
     return model, betas, p_values
 
 
@@ -563,17 +599,32 @@ def run_simulation(n_base_seqs: int, seq_length: int, n_variants: int, n_individ
     print(f"Raw phenotype stats: mean={np.mean(raw_phenotypes)}, var={np.var(raw_phenotypes)}")
     phenotypes = stats.zscore(raw_phenotypes)
 
-    X_train, X_test, y_train, y_test = train_test_split(snp_genotypes, phenotypes, test_size=test_size, random_state=seed)
-    X_train_eigen, X_test_eigen, y_train_eigen, y_test_eigen = train_test_split(individuals, phenotypes, test_size=test_size, random_state=seed)
-
     # Perform PCA
     print(f"Number of PCA components: {n_components}")
-    print(f"X_train shape: {X_train.shape}")
 
     pca = CustomPCA(n_components=n_components)
 
+
+    # Replace NaN with zeros in snp_genotypes
+    snp_genotypes = np.nan_to_num(snp_genotypes, nan=0.0)
+
+
+    # Replace NaN with zeros in individuals
+    individuals = np.nan_to_num(individuals, nan=0.0)
+
+
+    # Replace NaN with zeros in phenotypes
+    phenotypes = np.nan_to_num(phenotypes, nan=0.0)
+
+    X_train, X_test, y_train, y_test = train_test_split(snp_genotypes, phenotypes, test_size=test_size, random_state=seed)
+    X_train_eigen, X_test_eigen, y_train_eigen, y_test_eigen = train_test_split(individuals, phenotypes, test_size=test_size, random_state=seed)
+
     X_train_pca = pca.fit_transform(X_train)
     X_test_pca = pca.transform(X_test)
+
+
+
+    print(f"X_train shape: {X_train.shape}")
 
     model_normal, coefficients_normal, p_values_normal = perform_gwas(X_train, y_train)
     model_eigen, coefficients_eigen, p_values_eigen = perform_gwas(X_train_eigen, y_train_eigen)
@@ -706,13 +757,13 @@ def main():
     
     # Simulation parameters
     params = {
-        'n_base_seqs': 50,  # Backbone of pangenome graph
-        'seq_length': 500,  # How long each base sequence is
-        'n_variants': 200,  # Randomly mutate letters. Creates variants which individuals may or may not have
+        'n_base_seqs': 20,  # Backbone of pangenome graph
+        'seq_length': 200,  # How long each base sequence is
+        'n_variants': 100,  # Randomly mutate letters. Creates variants which individuals may or may not have
         'max_individuals': 110000,
-        'n_dimensions': 100,  # Maximum number of dimensions equals the number of nodes in the graph
-        'n_components': 100,  # Number of PCA components
-        'n_snps': 200,  # How many letters may end up influencing phenotype
+        'n_dimensions': 50,  # Maximum number of dimensions equals the number of nodes in the graph
+        'n_components': 50,  # Number of PCA components
+        'n_snps': 100,  # How many letters may end up influencing phenotype
         'snp_weight': 1.0,
         'random_snp_ratio': 0.95,  # Ratio of random SNPs to sequence-based SNPs
         'min_individuals': 15,  # Minimum number of individuals
