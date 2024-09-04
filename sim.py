@@ -10,6 +10,7 @@ from hdbscan import HDBSCAN
 from tqdm import tqdm
 import os
 from typing import Tuple, List, Dict, Callable
+#from sklearn.decomposition import PCA
 from scipy import linalg
 
 # Constants
@@ -594,12 +595,12 @@ def main():
         'n_base_seqs': 20,  # Backbone of pangenome graph
         'seq_length': 200,  # How long each base sequence is
         'n_variants': 50,  # Randomly mutate letters. Creates variants which individuals may or may not have
-        'max_individuals': 60000,
-        'n_dimensions': 20,  # Maximum number of dimensions equals the number of nodes in the graph
-        'n_components': 3,  # Number of PCA components
+        'max_individuals': 200000,
+        'n_dimensions': 50,  # Maximum number of dimensions equals the number of nodes in the graph
+        'n_components': 20,  # Number of PCA components
         'n_snps': 50,  # How many letters may end up influencing phenotype
         'snp_weight': 1,
-        'random_snp_ratio': 0.99,  # Ratio of random SNPs to sequence-based SNPs
+        'random_snp_ratio': 0.95,  # Ratio of random SNPs to sequence-based SNPs
         'min_individuals': 15,  # Minimum number of individuals
         'num_steps': 10,  # Number of steps between min and max individuals
         'test_size': 0.5,  # Test set size for train-test split
