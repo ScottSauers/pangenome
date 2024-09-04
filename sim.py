@@ -91,57 +91,56 @@ def mutate_sequence(sequence: str, mutation_rate: float = DEFAULT_MUTATION_RATE)
 
 
 
+
+
+
+
 def create_pangenome_graph(n_base_seqs: int, seq_length: int, n_variants: int, n_snps: int) -> Tuple[nx.DiGraph, Dict[str, str], np.ndarray, np.ndarray]:
-    """Create a pangenome graph with specified parameters."""
+    """Create a pangenome graph."""
     G = nx.DiGraph()
     sequences = {}
-    snp_positions = np.random.choice(seq_length, size=n_snps, replace=False) # Defines where SNPs can occur
+    snp_positions = np.random.choice(seq_length, size=n_snps, replace=False)
     snp_effects = np.random.normal(0, 1, n_snps)
     
     # Create base sequences
     for i in range(n_base_seqs):
         seq = create_sequence(seq_length)
         node_name = f"base_{i}"
-        G.add_node(node_name, sequence=seq)
+        G.add_node(node_name, sequence=seq, position=i)
         sequences[node_name] = seq
         if i > 0:
             G.add_edge(f"base_{i-1}", node_name)
-        
 
-    # Create variants, alternative paths, and shared alternatives
     variant_counter = 0
-    shared_alt_prob = 0.2  # Probability of creating a shared alternative path
-    max_branches_per_base = 3  # Maximum number of branches from each base node
+    shared_alt_prob = 0.2
+    max_branches_per_base = 3
 
-    for base_index in range(n_base_seqs - 1):  # Iterate through base nodes
+    for base_index in range(n_base_seqs - 1):
         branches = 0
-        while branches < max_branches_per_base and np.random.random() < 0.7:  # 70% chance to create a branch
-            if np.random.random() < shared_alt_prob:
-                # Create shared alternative path
-                branch_length = np.random.randint(3, 6)  # Longer branch for shared alternatives
-            else:
-                # Create regular variant or alternative path
-                branch_length = np.random.randint(1, 4)
+        while branches < max_branches_per_base and np.random.random() < 0.7:
+            branch_type = np.random.choice(['shared_alt', 'variant', 'alt'], p=[0.2, 0.5, 0.3])
+            branch_length = np.random.randint(3, 6) if branch_type == 'shared_alt' else np.random.randint(1, 4)
             
             prev_node = f"base_{base_index}"
+            start_position = base_index
             for j in range(branch_length):
                 var_seq = mutate_sequence(sequences[prev_node])
-                if np.random.random() < shared_alt_prob:
-                    node_name = f"shared_alt_{variant_counter}"
-                else:
-                    node_name = f"variant_{variant_counter}" if np.random.random() < 0.7 else f"alt_{variant_counter}"
+                node_name = f"{branch_type}_{variant_counter}"
                 variant_counter += 1
-                G.add_node(node_name, sequence=var_seq)
+                position = start_position + j
+                G.add_node(node_name, sequence=var_seq, position=position)
                 sequences[node_name] = var_seq
                 G.add_edge(prev_node, node_name)
                 prev_node = node_name
-            G.add_edge(prev_node, f"base_{min(base_index + branch_length, n_base_seqs - 1)}")
+
+            # Connect back to the main path
+            end_position = min(start_position + branch_length, n_base_seqs - 1)
+            reconnect_range = range(max(end_position - 1, start_position + 1), min(end_position + 2, n_base_seqs))
+            reconnect_point = np.random.choice(list(reconnect_range))
+            G.add_edge(prev_node, f"base_{reconnect_point}")
             branches += 1
 
     return G, sequences, snp_positions, snp_effects
-
-
-
 
 def generate_individual_path(G: nx.DiGraph, target_length: int) -> List[str]:
     path = ['base_0']
@@ -156,34 +155,38 @@ def generate_individual_path(G: nx.DiGraph, target_length: int) -> List[str]:
             break
 
         base_nodes = [n for n in neighbors if n.startswith('base_')]
-        variant_nodes = [n for n in neighbors if n.startswith('variant_')]
-        alt_nodes = [n for n in neighbors if n.startswith('alt_') or n.startswith('shared_alt_')]
+        alt_nodes = [n for n in neighbors if not n.startswith('base_')]
 
         if in_alternative:
-            # Higher chance to continue in alternative path
             if alt_nodes and np.random.random() < alternative_decay:
                 next_node = np.random.choice(alt_nodes)
-                alternative_decay *= 0.9  # Reduce chance to stay in alternative path
+                alternative_decay *= 0.9
             elif base_nodes:
-                next_node = base_nodes[0]
+                next_node = min(base_nodes, key=lambda x: abs(int(x.split('_')[1]) - G.nodes[current_node]['position']))
                 in_alternative = False
             else:
                 next_node = np.random.choice(neighbors)
         else:
-            # Lower chance to enter alternative path
-            if base_nodes and (variant_nodes or alt_nodes):
-                if np.random.random() < 0.2:  # 20% chance for variants/alternates
-                    next_node = np.random.choice(variant_nodes + alt_nodes)
+            if base_nodes and alt_nodes:
+                if np.random.random() < 0.2:
+                    next_node = np.random.choice(alt_nodes)
                     in_alternative = True
                     alternative_decay = 0.9
                 else:
-                    next_node = base_nodes[0]
+                    next_node = min(base_nodes, key=lambda x: abs(int(x.split('_')[1]) - G.nodes[current_node]['position']))
             else:
                 next_node = np.random.choice(neighbors)
 
         path.append(next_node)
         current_node = next_node
         current_length += len(G.nodes[current_node]['sequence'])
+
+    if len(path) == 1:
+        path.extend(list(nx.dfs_preorder_nodes(G, 'base_0'))[1:])
+
+
+    if len(path) <= 1:
+        path.extend(list(nx.dfs_preorder_nodes(G, 'base_0'))[1:])
 
     return path
 
@@ -283,7 +286,7 @@ def create_phenotype_function(sequences: Dict[str, str], snp_positions: np.ndarr
             context_score = sum(sequences[node].count('GC') * 0.1 for node, present in zip(node_list, genotype) if present)
             snp_score = np.dot(snp_genotype, snp_effects)
             phenotypes[i] = pattern_score + context_score + snp_weight * snp_score
-            phenotypes[i] += np.random.normal(0, 0.01)
+            phenotypes[i] += np.random.normal(0, 0.1)
         
         return stats.zscore(phenotypes)
     
@@ -491,7 +494,7 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, X_test_pca: np.ndarray, 
             class_member_mask = (cluster_labels == k)
             xyz = X_test_eigen[class_member_mask]
             ax3d.scatter(xyz[:, 0], xyz[:, 1], xyz[:, 2], s=50, facecolors='none', edgecolors=col, linewidth=0.6, alpha=0.5)
-    ax3d.view_init(elev=20, azim=45)
+    ax3d.view_init(elev=20, azim=40)
     plt.colorbar(scatter3d, ax=ax3d, label='Phenotype')
     fig.delaxes(axs[2, 0])
     fig.delaxes(axs[2, 2])
@@ -703,22 +706,23 @@ def main():
     
     # Simulation parameters
     params = {
-        'n_base_seqs': 20,  # Backbone of pangenome graph
-        'seq_length': 200,  # How long each base sequence is
-        'n_variants': 50,  # Randomly mutate letters. Creates variants which individuals may or may not have
-        'max_individuals': 8000,
-        'n_dimensions': 20,  # Maximum number of dimensions equals the number of nodes in the graph
-        'n_components': 3,  # Number of PCA components
-        'n_snps': 50,  # How many letters may end up influencing phenotype
-        'snp_weight': 1,
+        'n_base_seqs': 50,  # Backbone of pangenome graph
+        'seq_length': 500,  # How long each base sequence is
+        'n_variants': 200,  # Randomly mutate letters. Creates variants which individuals may or may not have
+        'max_individuals': 110000,
+        'n_dimensions': 100,  # Maximum number of dimensions equals the number of nodes in the graph
+        'n_components': 100,  # Number of PCA components
+        'n_snps': 200,  # How many letters may end up influencing phenotype
+        'snp_weight': 1.0,
         'random_snp_ratio': 0.95,  # Ratio of random SNPs to sequence-based SNPs
         'min_individuals': 15,  # Minimum number of individuals
-        'num_steps': 10,  # Number of steps between min and max individuals
+        'num_steps': 20,  # Number of steps between min and max individuals
         'test_size': 0.5,  # Test set size for train-test split
         'min_cluster_size': 5,  # Minimum cluster size for HDBSCAN
-        'seed': 2024, 
+        'seed': 2024,
     }
 
+    
     print("Simulation parameters:")
     for key, value in params.items():
         print(f"{key}: {value}")
