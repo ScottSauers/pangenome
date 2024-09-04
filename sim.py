@@ -12,6 +12,8 @@ import os
 from typing import Tuple, List, Dict, Callable
 #from sklearn.decomposition import PCA
 from scipy import linalg
+from matplotlib.lines import Line2D
+from mpl_toolkits.mplot3d import Axes3D
 
 # Constants
 BASE_NUCLEOTIDES = ['A', 'T', 'C', 'G']
@@ -87,9 +89,14 @@ def mutate_sequence(sequence: str, mutation_rate: float = DEFAULT_MUTATION_RATE)
     return ''.join(np.random.choice(BASE_NUCLEOTIDES) if np.random.random() < mutation_rate else base
                    for base in sequence)
 
-def create_pangenome_graph(n_base_seqs: int, seq_length: int, n_variants: int, n_snps: int) -> Tuple[nx.Graph, Dict[str, str], np.ndarray, np.ndarray]:
+
+
+
+
+
+def create_pangenome_graph(n_base_seqs: int, seq_length: int, n_variants: int, n_snps: int) -> Tuple[nx.DiGraph, Dict[str, str], np.ndarray, np.ndarray]:
     """Create a pangenome graph with specified parameters."""
-    G = nx.Graph()
+    G = nx.DiGraph()
     sequences = {}
     snp_positions = np.random.choice(seq_length, size=n_snps, replace=False) # Defines where SNPs can occur
     snp_effects = np.random.normal(0, 1, n_snps)
@@ -98,26 +105,101 @@ def create_pangenome_graph(n_base_seqs: int, seq_length: int, n_variants: int, n
     for i in range(n_base_seqs):
         seq = create_sequence(seq_length)
         node_name = f"base_{i}"
-        G.add_node(node_name)
+        G.add_node(node_name, sequence=seq)
         sequences[node_name] = seq
         if i > 0:
             G.add_edge(f"base_{i-1}", node_name)
-    
-    # Create variants
-    for i in range(n_variants):
-        base_index = np.random.randint(n_base_seqs)
-        base_node = f"base_{base_index}"
-        var_seq = mutate_sequence(sequences[base_node])
-        node_name = f"variant_{i}"
-        G.add_node(node_name)
-        sequences[node_name] = var_seq
-        G.add_edge(base_node, node_name)
         
-        if np.random.random() < 0.5 and base_index < n_base_seqs - 1:
-            reconnect_index = np.random.randint(base_index + 1, n_base_seqs)
-            G.add_edge(node_name, f"base_{reconnect_index}")
+
+    # Create variants, alternative paths, and shared alternatives
+    variant_counter = 0
+    shared_alt_prob = 0.2  # Probability of creating a shared alternative path
+    max_branches_per_base = 3  # Maximum number of branches from each base node
+
+    for base_index in range(n_base_seqs - 1):  # Iterate through base nodes
+        branches = 0
+        while branches < max_branches_per_base and np.random.random() < 0.7:  # 70% chance to create a branch
+            if np.random.random() < shared_alt_prob:
+                # Create shared alternative path
+                branch_length = np.random.randint(3, 6)  # Longer branch for shared alternatives
+            else:
+                # Create regular variant or alternative path
+                branch_length = np.random.randint(1, 4)
+            
+            prev_node = f"base_{base_index}"
+            for j in range(branch_length):
+                var_seq = mutate_sequence(sequences[prev_node])
+                if np.random.random() < shared_alt_prob:
+                    node_name = f"shared_alt_{variant_counter}"
+                else:
+                    node_name = f"variant_{variant_counter}" if np.random.random() < 0.7 else f"alt_{variant_counter}"
+                variant_counter += 1
+                G.add_node(node_name, sequence=var_seq)
+                sequences[node_name] = var_seq
+                G.add_edge(prev_node, node_name)
+                prev_node = node_name
+            G.add_edge(prev_node, f"base_{min(base_index + branch_length, n_base_seqs - 1)}")
+            branches += 1
 
     return G, sequences, snp_positions, snp_effects
+
+
+
+
+
+
+
+
+
+def generate_individual_path(G: nx.DiGraph, target_length: int) -> List[str]:
+    path = ['base_0']
+    current_node = 'base_0'
+    current_length = len(G.nodes[current_node]['sequence'])
+    in_alternative = False
+    alternative_decay = 0.9
+
+    while current_length < target_length:
+        neighbors = list(G.successors(current_node))
+        if not neighbors:
+            break
+
+        base_nodes = [n for n in neighbors if n.startswith('base_')]
+        variant_nodes = [n for n in neighbors if n.startswith('variant_')]
+        alt_nodes = [n for n in neighbors if n.startswith('alt_') or n.startswith('shared_alt_')]
+
+        if in_alternative:
+            # Higher chance to continue in alternative path
+            if alt_nodes and np.random.random() < alternative_decay:
+                next_node = np.random.choice(alt_nodes)
+                alternative_decay *= 0.9  # Reduce chance to stay in alternative path
+            elif base_nodes:
+                next_node = base_nodes[0]
+                in_alternative = False
+            else:
+                next_node = np.random.choice(neighbors)
+        else:
+            # Lower chance to enter alternative path
+            if base_nodes and (variant_nodes or alt_nodes):
+                if np.random.random() < 0.2:  # 20% chance for variants/alternates
+                    next_node = np.random.choice(variant_nodes + alt_nodes)
+                    in_alternative = True
+                    alternative_decay = 0.9
+                else:
+                    next_node = base_nodes[0]
+            else:
+                next_node = np.random.choice(neighbors)
+
+        path.append(next_node)
+        current_node = next_node
+        current_length += len(G.nodes[current_node]['sequence'])
+
+    return path
+
+
+
+
+
+
 
 def compute_laplacian(G: nx.Graph) -> np.ndarray:
     """Compute the Laplacian matrix of the graph."""
@@ -147,12 +229,16 @@ def compute_eigenvectors(L: np.ndarray, k: int) -> np.ndarray:
     return eigenvectors[:, :k]
 
 
-def simulate_individuals(G: nx.Graph, n_individuals: int, node_embeddings: np.ndarray, 
+
+def simulate_individuals(G: nx.DiGraph, n_individuals: int, node_embeddings: np.ndarray, 
                          sequences: Dict[str, str], snp_positions: np.ndarray, 
-                         random_snp_ratio: float = 0.95) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+                         random_snp_ratio: float = 0.95) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[List[str]]]:
     """Simulate individuals based on the pangenome graph."""
     node_list = list(G.nodes())
-    individuals, genotypes, snp_genotypes = [], [], []
+    individuals, genotypes, snp_genotypes, individual_paths = [], [], [], []
+    
+    # Calculate target sequence length
+    target_length = sum(len(sequences[node]) for node in node_list if node.startswith('base_'))
     
     # Determine which SNPs will be random vs. sequence-based
     n_snps = len(snp_positions)
@@ -162,15 +248,17 @@ def simulate_individuals(G: nx.Graph, n_individuals: int, node_embeddings: np.nd
     random_snps = np.random.choice([0, 1, 2], size=n_snps)
     
     for _ in range(n_individuals):
-        # Generate individual nodes
-        individual_nodes = [node for node in node_list if node.startswith("base_")]
-        individual_nodes += [node for node in node_list if node.startswith("variant_") and np.random.random() < 0.5]
+        # Generate individual path
+        individual_path = generate_individual_path(G, target_length)
+        individual_paths.append(individual_path)
         
         # Generate genotype
-        genotype = np.array([1 if node in individual_nodes else 0 for node in node_list])
+        genotype = np.array([1 if node in individual_path else 0 for node in node_list])
         
         # Calculate individual embedding
-        individual_embedding = node_embeddings[[node_list.index(node) for node in individual_nodes]].mean(axis=0)
+        path_indices = [node_list.index(node) for node in individual_path]
+        individual_embedding = node_embeddings[path_indices].sum(axis=0)  # Changed from mean to sum
+        individual_embedding /= np.linalg.norm(individual_embedding)  # Normalize the embedding
         
         # Generate SNP genotypes
         snp_genotype = []
@@ -180,8 +268,8 @@ def simulate_individuals(G: nx.Graph, n_individuals: int, node_embeddings: np.nd
                 snp = random_snps[i]
             else:
                 # Based on sequences
-                sequence_genotype = [sequences[node][pos] for node in individual_nodes]
-                reference_allele = sequences[individual_nodes[0]][pos]
+                sequence_genotype = [sequences[node][pos] for node in individual_path]
+                reference_allele = sequences[individual_path[0]][pos]
                 snp = sum(1 for allele in sequence_genotype if allele != reference_allele)
             snp_genotype.append(snp)
         
@@ -189,7 +277,9 @@ def simulate_individuals(G: nx.Graph, n_individuals: int, node_embeddings: np.nd
         genotypes.append(genotype)
         snp_genotypes.append(snp_genotype)
     
-    return np.array(individuals), np.array(genotypes), np.array(snp_genotypes)
+    return np.array(individuals), np.array(genotypes), np.array(snp_genotypes), individual_paths
+
+
 
 def create_phenotype_function(sequences: Dict[str, str], snp_positions: np.ndarray, 
                               snp_effects: np.ndarray, snp_weight: float = 1.0) -> Callable:
@@ -205,6 +295,7 @@ def create_phenotype_function(sequences: Dict[str, str], snp_positions: np.ndarr
             context_score = sum(sequences[node].count('GC') * 0.1 for node, present in zip(node_list, genotype) if present)
             snp_score = np.dot(snp_genotype, snp_effects)
             phenotypes[i] = pattern_score + context_score + snp_weight * snp_score
+            phenotypes[i] += np.random.normal(0, 0.01)
         
         return stats.zscore(phenotypes)
     
@@ -234,7 +325,8 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, X_test_pca: np.ndarray, 
                  r_squared_eigen: float, r_squared_normal: float, r_squared_pca: float,
                  p_values_eigen: np.ndarray, p_values_normal: np.ndarray, p_values_pca: np.ndarray,
                  overall_p_eigen: float, overall_p_normal: float, overall_p_pca: float,
-                 genotypes: np.ndarray, node_list: List[str], filename: str, min_cluster_size: int) -> None:
+                 genotypes: np.ndarray, node_list: List[str], individual_paths: List[List[str]],
+                 filename: str, min_cluster_size: int) -> None:
 
     """Plot the results of the GWAS analysis."""
     fig, axs = plt.subplots(3, 3, figsize=(24, 24))
@@ -252,21 +344,25 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, X_test_pca: np.ndarray, 
                  f"PCA GWAS R² = {r_squared_pca:.4f} (p = {format_p_value(overall_p_pca)})")
 
 
+
     # Create a custom layout
     pos = {}
-    base_nodes = sorted([node for node in G.nodes() if node.startswith('base')], key=lambda x: int(x.split('_')[1]))
-    variant_nodes = [node for node in G.nodes() if node.startswith('variant')]
-    
+    base_nodes = sorted([node for node in G.nodes() if node.startswith('base_')], key=lambda x: int(x.split('_')[1]))
+    variant_nodes = [node for node in G.nodes() if node.startswith('variant_')]
+    alt_nodes = [node for node in G.nodes() if node.startswith('alt_')]
+
+
     # Position base nodes along a curved line
     t = np.linspace(0, np.pi, len(base_nodes))
     x = t
     y = 0.2 * np.sin(t)
     for i, node in enumerate(base_nodes):
         pos[node] = (x[i], y[i])
-    
-    # Position variant nodes
-    for i, node in enumerate(variant_nodes):
-        base_connections = [n for n in G.neighbors(node) if n.startswith('base')]
+
+
+    # Position variant and alt nodes
+    for node in variant_nodes + alt_nodes:
+        base_connections = [n for n in G.neighbors(node) if n.startswith('base_')]
         if base_connections:
             base_x, base_y = pos[base_connections[0]]
             angle = np.random.uniform(-np.pi/3, np.pi/3)
@@ -274,43 +370,60 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, X_test_pca: np.ndarray, 
             pos[node] = (base_x + distance * np.cos(angle), base_y + distance * np.sin(angle))
         else:
             pos[node] = (np.random.random(), np.random.random())
+
+
+    # Ensure all nodes have a position
+    for node in G.nodes():
+        if node not in pos:
+            pos[node] = (np.random.random(), np.random.random())
     
     # Main pangenome plot
     axs[0, 0].set_title("Pangenome Graph Structure")
-    nx.draw_networkx_nodes(G, pos, ax=axs[0, 0], node_color=['blue' if node.startswith('base') else 'red' for node in G.nodes()], 
-                           node_size=[50 if node.startswith('base') else 30 for node in G.nodes()])
-    edge_colors = ['black' if 'base' in u and 'base' in v else 'gray' for u, v in G.edges()]
-    edge_widths = [3 if 'base' in u and 'base' in v else 1 for u, v in G.edges()]
-    for (u, v), color, width in zip(G.edges(), edge_colors, edge_widths):
-        axs[0, 0].annotate("", xy=pos[v], xytext=pos[u],
-                           arrowprops=dict(arrowstyle="-", color=color, 
-                                           connectionstyle="arc3,rad=0.1",
-                                           linewidth=width))
+    node_colors = ['blue' if node.startswith('base_') else 'red' if node.startswith('variant_') else 'green' for node in G.nodes()]
+    node_sizes = [50 if node.startswith('base_') else 30 for node in G.nodes()]
+    nx.draw_networkx_nodes(G, pos, ax=axs[0, 0], node_color=node_colors, node_size=node_sizes)
+    
+    edge_colors = ['black' if 'base_' in u and 'base_' in v else 'red' if 'variant_' in u or 'variant_' in v else 'green' for u, v in G.edges()]
+    edge_widths = [2 if 'base_' in u and 'base_' in v else 1 for u, v in G.edges()]
+    nx.draw_networkx_edges(G, pos, ax=axs[0, 0], edge_color=edge_colors, width=edge_widths, 
+                           connectionstyle="arc3,rad=0.1", arrowsize=10)
+    
+    legend_elements = [Line2D([0], [0], marker='o', color='w', label='Base', markerfacecolor='blue', markersize=10),
+                       Line2D([0], [0], marker='o', color='w', label='Variant', markerfacecolor='red', markersize=8),
+                       Line2D([0], [0], marker='o', color='w', label='Alternative', markerfacecolor='green', markersize=8)]
+    axs[0, 0].legend(handles=legend_elements, loc='upper right')
 
     axs[0, 0].axis('off')
 
 
-    
+        
+
     # Individual genomes
     axs[0, 1].set_title("Individual Genomes")
-    num_individuals = min(3, len(genotypes))
-    random_individuals = np.random.choice(len(genotypes), num_individuals, replace=False)
+    num_individuals = min(3, len(individual_paths))
+    random_individuals = np.random.choice(len(individual_paths), num_individuals, replace=False)
     for i, idx in enumerate(random_individuals):
-        individual_genome = genotypes[idx]
-        individual_graph = nx.Graph()
-        for j, present in enumerate(individual_genome):
-            if present:
-                individual_graph.add_node(node_list[j])
-                if j > 0 and individual_genome[j-1]:
-                    individual_graph.add_edge(node_list[j-1], node_list[j])
+        individual_path = individual_paths[idx]
         
         ax_inset = axs[0, 1].inset_axes([0.05, 0.7 - i*0.3, 0.9, 0.25])
-        nx.draw(individual_graph, pos, ax=ax_inset, 
-            node_color=['blue' if node.startswith('base') else 'red' for node in individual_graph.nodes()],
-            node_size=5, with_labels=False)
+        
+        # Create a subgraph for this individual
+        individual_graph = G.subgraph(individual_path)
+        
+        # Use the same layout as the main graph, but only for the nodes in this path
+        individual_pos = {node: pos[node] for node in individual_path if node in pos}
+        
+        nx.draw_networkx_nodes(individual_graph, individual_pos, ax=ax_inset,
+                               node_color=['blue' if node.startswith('base_') else 'red' if node.startswith('variant_') 
+                                           else 'green' if node.startswith('alt_') else 'purple' for node in individual_path],
+                               node_size=5)
+        
+        nx.draw_networkx_edges(individual_graph, individual_pos, ax=ax_inset,
+                               edge_color='gray', arrows=True, arrowsize=5,
+                               connectionstyle="arc3,rad=0.1")
+        
         ax_inset.set_title(f"Individual {idx}", fontsize=8)
         ax_inset.axis('off')
-    axs[0, 1].axis('off')
 
 
 
@@ -381,7 +494,6 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, X_test_pca: np.ndarray, 
         scatter = axs[2, 0].scatter(X_test_eigen[:, 0], X_test_eigen[:, 1], c=y_test, cmap='viridis')
         unique_labels = set(cluster_labels)
         colors = plt.colormaps['rainbow'](np.linspace(0, 1, len(unique_labels) - 1))
-
         for k, col in zip(sorted(list(unique_labels - {-1})), colors):
             class_member_mask = (cluster_labels == k)
             xy = X_test_eigen[class_member_mask, 0:2]
@@ -394,6 +506,21 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, X_test_pca: np.ndarray, 
     axs[2, 0].set_xlabel("Dimension 1")
     axs[2, 0].set_ylabel("Dimension 2")
     plt.colorbar(scatter, ax=axs[2, 0], label='Phenotype')
+
+    # 3D plot of individual embeddings
+    ax3d = fig.add_subplot(3, 3, 7, projection='3d')
+    scatter3d = ax3d.scatter(X_test_eigen[:, 0], X_test_eigen[:, 1], X_test_eigen[:, 2], c=y_test, cmap='viridis')
+    ax3d.set_title("Individual Embeddings (3D)")
+    ax3d.set_xlabel("Dimension 1")
+    ax3d.set_ylabel("Dimension 2")
+    ax3d.set_zlabel("Dimension 3")
+
+    ax3d.view_init(elev=20, azim=45)
+
+    plt.colorbar(scatter3d, ax=ax3d, label='Phenotype')
+
+    plt.tight_layout()
+    
 
     # Plot p-values for all GWAS methods
     max_length = max(len(p_values_eigen), len(p_values_normal), len(p_values_pca))
@@ -426,6 +553,8 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, X_test_pca: np.ndarray, 
     plt.close()
 
 
+
+
 def run_simulation(n_base_seqs: int, seq_length: int, n_variants: int, n_individuals: int, 
                    n_dimensions: int, n_components: int, n_snps: int, snp_weight: float, random_snp_ratio: float,
                    test_size: float, min_cluster_size: int, seed: int) -> Tuple[float, float, float, float, float, float]:
@@ -437,16 +566,27 @@ def run_simulation(n_base_seqs: int, seq_length: int, n_variants: int, n_individ
     L = compute_laplacian(G)
     eigenvectors = compute_eigenvectors(L, n_dimensions)
 
-    individuals, genotypes, snp_genotypes = simulate_individuals(G, n_individuals, eigenvectors, sequences, snp_positions)
+    individuals, genotypes, snp_genotypes, individual_paths = simulate_individuals(G, n_individuals, eigenvectors, sequences, snp_positions)
+
+
+    # Remove NaN values
+    mask = ~np.isnan(individuals).any(axis=1)
+    individuals = individuals[mask]
+    genotypes = genotypes[mask]
+    snp_genotypes = snp_genotypes[mask]
+    individual_paths = [individual_paths[i] for i in range(len(individual_paths)) if mask[i]]
+
+
+    # Apply normalization after NaN removal
     individuals = stats.zscore(individuals, axis=0)
     phenotype_func = create_phenotype_function(sequences, snp_positions, snp_effects, snp_weight)
-    phenotypes = stats.zscore(phenotype_func(genotypes, node_list, snp_genotypes))
 
+    raw_phenotypes = phenotype_func(genotypes, node_list, snp_genotypes)
+    print(f"Raw phenotype stats: mean={np.mean(raw_phenotypes)}, var={np.var(raw_phenotypes)}")
+    phenotypes = stats.zscore(raw_phenotypes)
 
     X_train, X_test, y_train, y_test = train_test_split(snp_genotypes, phenotypes, test_size=test_size, random_state=seed)
     X_train_eigen, X_test_eigen, y_train_eigen, y_test_eigen = train_test_split(individuals, phenotypes, test_size=test_size, random_state=seed)
-
-
 
     # Perform PCA
     print(f"Number of PCA components: {n_components}")
@@ -471,8 +611,6 @@ def run_simulation(n_base_seqs: int, seq_length: int, n_variants: int, n_individ
         r_squared_pca_full = r2_score(y_test, y_pred_pca)
     else:
         r_squared_normal_full = r_squared_eigen_full = r_squared_pca_full = np.nan
-
-
 
     n_test = X_test.shape[0]
     n_features = X_test.shape[1]
@@ -501,10 +639,6 @@ def run_simulation(n_base_seqs: int, seq_length: int, n_variants: int, n_individ
     print(f"Eigenvector GWAS p-value: {overall_p_eigen:.4e}")
     print(f"PCA GWAS p-value: {overall_p_pca:.4e}")
 
-
-
-
-
     filename = f"results_{n_individuals}.png"
     plot_results(G, X_test_eigen, X_test_pca, y_test, 
                  y_pred_eigen, y_pred_normal, y_pred_pca,
@@ -512,10 +646,12 @@ def run_simulation(n_base_seqs: int, seq_length: int, n_variants: int, n_individ
                  r_squared_eigen_full, r_squared_normal_full, r_squared_pca_full,
                  p_values_eigen, p_values_normal, p_values_pca,
                  overall_p_eigen, overall_p_normal, overall_p_pca,
-                 genotypes, node_list, filename, min_cluster_size)
+                 genotypes, node_list, individual_paths, filename, min_cluster_size)
 
     os.system(f"open {filename}")
     return r_squared_eigen_full, r_squared_normal_full, r_squared_pca_full, overall_p_eigen, overall_p_normal, overall_p_pca
+
+
 
 def compare_sample_sizes(n_base_seqs: int, seq_length: int, n_variants: int, max_individuals: int, 
                          n_dimensions: int, n_components: int, n_snps: int, snp_weight: float, random_snp_ratio: float,
@@ -595,9 +731,9 @@ def main():
         'n_base_seqs': 20,  # Backbone of pangenome graph
         'seq_length': 200,  # How long each base sequence is
         'n_variants': 50,  # Randomly mutate letters. Creates variants which individuals may or may not have
-        'max_individuals': 200000,
-        'n_dimensions': 50,  # Maximum number of dimensions equals the number of nodes in the graph
-        'n_components': 20,  # Number of PCA components
+        'max_individuals': 8000,
+        'n_dimensions': 20,  # Maximum number of dimensions equals the number of nodes in the graph
+        'n_components': 3,  # Number of PCA components
         'n_snps': 50,  # How many letters may end up influencing phenotype
         'snp_weight': 1,
         'random_snp_ratio': 0.95,  # Ratio of random SNPs to sequence-based SNPs
