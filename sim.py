@@ -91,9 +91,6 @@ def mutate_sequence(sequence: str, mutation_rate: float = DEFAULT_MUTATION_RATE)
 
 
 
-
-
-
 def create_pangenome_graph(n_base_seqs: int, seq_length: int, n_variants: int, n_snps: int) -> Tuple[nx.DiGraph, Dict[str, str], np.ndarray, np.ndarray]:
     """Create a pangenome graph with specified parameters."""
     G = nx.DiGraph()
@@ -146,11 +143,6 @@ def create_pangenome_graph(n_base_seqs: int, seq_length: int, n_variants: int, n
 
 
 
-
-
-
-
-
 def generate_individual_path(G: nx.DiGraph, target_length: int) -> List[str]:
     path = ['base_0']
     current_node = 'base_0'
@@ -194,10 +186,6 @@ def generate_individual_path(G: nx.DiGraph, target_length: int) -> List[str]:
         current_length += len(G.nodes[current_node]['sequence'])
 
     return path
-
-
-
-
 
 
 
@@ -488,39 +476,26 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, X_test_pca: np.ndarray, 
     axs[2, 2].set_ylabel("PC2")
 
     # Plot HDBSCAN clustering and scatterplot
-    if X_test_eigen.shape[0] > 5:  # Only perform clustering if we have enough samples
+    ax3d = fig.add_subplot(3, 3, 7, projection='3d')
+    scatter3d = ax3d.scatter(X_test_eigen[:, 0], X_test_eigen[:, 1], X_test_eigen[:, 2], c=y_test, cmap='viridis', s=30)
+    ax3d.set_title("Individual Embeddings (with HDBSCAN Clustering)")
+    ax3d.set_xlabel("Dimension 1")
+    ax3d.set_ylabel("Dimension 2")
+    ax3d.set_zlabel("Dimension 3")
+    if X_test_eigen.shape[0] > 5:
         clusterer = HDBSCAN(min_cluster_size=min(5, X_test_eigen.shape[0]))
         cluster_labels = clusterer.fit_predict(X_test_eigen)
-        scatter = axs[2, 0].scatter(X_test_eigen[:, 0], X_test_eigen[:, 1], c=y_test, cmap='viridis')
         unique_labels = set(cluster_labels)
         colors = plt.colormaps['rainbow'](np.linspace(0, 1, len(unique_labels) - 1))
         for k, col in zip(sorted(list(unique_labels - {-1})), colors):
             class_member_mask = (cluster_labels == k)
-            xy = X_test_eigen[class_member_mask, 0:2]
-            axs[2, 0].scatter(xy[:, 0], xy[:, 1], s=50, facecolors='none', edgecolors=col, linewidth=0.6, alpha=0.5)
-        axs[2, 0].set_title("Individual Embeddings (HDBSCAN Clustering)")
-    else:
-        scatter = axs[2, 0].scatter(X_test_eigen[:, 0], X_test_eigen[:, 1], c=y_test, cmap='viridis')
-        axs[2, 0].set_title("Individual Embeddings (Scatter Plot)")
-    
-    axs[2, 0].set_xlabel("Dimension 1")
-    axs[2, 0].set_ylabel("Dimension 2")
-    plt.colorbar(scatter, ax=axs[2, 0], label='Phenotype')
-
-    # 3D plot of individual embeddings
-    ax3d = fig.add_subplot(3, 3, 7, projection='3d')
-    scatter3d = ax3d.scatter(X_test_eigen[:, 0], X_test_eigen[:, 1], X_test_eigen[:, 2], c=y_test, cmap='viridis')
-    ax3d.set_title("Individual Embeddings (3D)")
-    ax3d.set_xlabel("Dimension 1")
-    ax3d.set_ylabel("Dimension 2")
-    ax3d.set_zlabel("Dimension 3")
-
+            xyz = X_test_eigen[class_member_mask]
+            ax3d.scatter(xyz[:, 0], xyz[:, 1], xyz[:, 2], s=50, facecolors='none', edgecolors=col, linewidth=0.6, alpha=0.5)
     ax3d.view_init(elev=20, azim=45)
-
     plt.colorbar(scatter3d, ax=ax3d, label='Phenotype')
-
-    plt.tight_layout()
-    
+    fig.delaxes(axs[2, 0])
+    fig.delaxes(axs[2, 2])
+    plt.tight_layout() 
 
     # Plot p-values for all GWAS methods
     max_length = max(len(p_values_eigen), len(p_values_normal), len(p_values_pca))
