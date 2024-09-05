@@ -295,53 +295,22 @@ def create_phenotype_function(sequences: Dict[str, str], snp_positions: np.ndarr
     
     return phenotype_function
 
-
-def perform_gwas(X: np.ndarray, y: np.ndarray) -> Tuple[LinearRegression, np.ndarray, np.ndarray]:
+def perform_gwas(X: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     n_features = X.shape[1]
-    betas, p_values = np.zeros(n_features), np.zeros(n_features)
+    betas, p_values, intercepts = np.zeros(n_features), np.zeros(n_features), np.zeros(n_features)
 
-    # Replace NaN values with zero in X
     X = np.nan_to_num(X, nan=0.0)
-
-    # Check for infinite values in X
-    if np.any(np.isinf(X)):
-        print("Warning: Input X contains infinite values.")
-        inf_cols = np.where(np.any(np.isinf(X), axis=0))[0]
-        print(f"Indices of columns with infinite values: {inf_cols}")
-        for col in inf_cols:
-            print(f"Column {col}: {X[:, col][np.isinf(X[:, col])]}")
-
-    # Check for NaN values in X (after replacement)
-    if np.any(np.isnan(X)):
-        print("Warning: Input X still contains NaN values after replacement.")
-        nan_cols = np.where(np.any(np.isnan(X), axis=0))[0]
-        print(f"Indices of columns with NaN values: {nan_cols}")
-        for col in nan_cols:
-            nan_values = X[:, col][np.isnan(X[:, col])]
-            print(f"Column {col}: {nan_values}")
-            print(f"Number of NaN values in column {col}: {len(nan_values)}")
-
-    # Check for infinite values in y
-    if np.any(np.isinf(y)):
-        print("Warning: Input y contains infinite values.")
-        print(f"Infinite values in y: {y[np.isinf(y)]}")
-
-    # Check for NaN values in y
-    if np.any(np.isnan(y)):
-        print("Warning: Input y contains NaN values.")
-        print(f"NaN values in y: {y[np.isnan(y)]}")
-        print(f"Number of NaN values in y: {np.sum(np.isnan(y))}")
 
     for i in range(n_features):
         if np.all(X[:, i] == X[0, i]):  # Check if all values in the column are the same
-            betas[i], p_values[i] = 0, 1
+            betas[i], p_values[i], intercepts[i] = 0, 1, 0
         else:
             slope, intercept, r_value, p_value, std_err = stats.linregress(X[:, i], y)
-            betas[i], p_values[i] = slope, max(p_value, np.finfo(float).tiny)
+            betas[i] = slope
+            p_values[i] = max(p_value, np.finfo(float).tiny)
+            intercepts[i] = intercept
 
-    model = LinearRegression().fit(X, y)
-
-    return model, betas, p_values
+    return betas, p_values, intercepts
 
 
 
@@ -620,24 +589,52 @@ def run_simulation(n_base_seqs: int, seq_length: int, n_variants: int, n_individ
 
     print(f"X_train shape: {X_train.shape}")
 
-    model_normal, coefficients_normal, p_values_normal = perform_gwas(X_train, y_train)
-    model_eigen, coefficients_eigen, p_values_eigen = perform_gwas(X_train_eigen, y_train_eigen)
-    model_pca, coefficients_pca, p_values_pca = perform_gwas(X_train_pca, y_train)
+    coefficients_normal, p_values_normal, intercepts_normal = perform_gwas(X_train, y_train)
+    coefficients_eigen, p_values_eigen, intercepts_eigen = perform_gwas(X_train_eigen, y_train_eigen)
+    coefficients_pca, p_values_pca, intercepts_pca = perform_gwas(X_train_pca, y_train)
 
-    print("Normal GWAS coefficients:", model_normal.coef_)
-    print("Eigenvector GWAS coefficients:", model_eigen.coef_)
-    print("PCA GWAS coefficients:", model_pca.coef_)
+    print("Normal GWAS coefficients:", coefficients_normal)
+    print("Eigenvector GWAS coefficients:", coefficients_eigen)
+    print("PCA GWAS coefficients:", coefficients_pca)
 
-    y_pred_normal = model_normal.predict(X_test)
-    y_pred_eigen = model_eigen.predict(X_test_eigen)
-    y_pred_pca = model_pca.predict(X_test_pca)
+    def z_norm(x):
+        return (x - np.mean(x)) / np.std(x)
+
+    y_pred_normal = np.dot(X_test, coefficients_normal) + np.mean(intercepts_normal)
+    y_pred_eigen = np.dot(X_test_eigen, coefficients_eigen) + np.mean(intercepts_eigen)
+    y_pred_pca = np.dot(X_test_pca, coefficients_pca) + np.mean(intercepts_pca)
+
+
+    # Z-normalize y_test and all predictions
+    y_test = z_norm(y_test)
+    y_pred_normal = z_norm(y_pred_normal)
+    y_pred_eigen = z_norm(y_pred_eigen)
+    y_pred_pca = z_norm(y_pred_pca)
+
+    def unadjusted_r2(y_true, y_pred):
+        return np.corrcoef(y_true, y_pred)[0, 1]**2
 
     if len(y_test) > 1:
-        r_squared_normal_full = r2_score(y_test, y_pred_normal)
-        r_squared_eigen_full = r2_score(y_test_eigen, y_pred_eigen)
-        r_squared_pca_full = r2_score(y_test, y_pred_pca)
+        r_squared_normal_full = unadjusted_r2(y_test, y_pred_normal)
+        r_squared_eigen_full = unadjusted_r2(y_test, y_pred_eigen)
+        r_squared_pca_full = unadjusted_r2(y_test, y_pred_pca)
+
+        print("Y_test range:", np.min(y_test), np.max(y_test))
+        print("Y_pred_normal range:", np.min(y_pred_normal), np.max(y_pred_normal))
+        print("Y_pred_eigen range:", np.min(y_pred_eigen), np.max(y_pred_eigen))
+        print("Y_pred_pca range:", np.min(y_pred_pca), np.max(y_pred_pca))
+        
+        corr_normal = np.corrcoef(y_test, y_pred_normal)[0, 1]
+        corr_eigen = np.corrcoef(y_test, y_pred_eigen)[0, 1]
+        corr_pca = np.corrcoef(y_test, y_pred_pca)[0, 1]
+        
+        print(f"Normal GWAS correlation: {corr_normal:.4f}")
+        print(f"Eigenvector GWAS correlation: {corr_eigen:.4f}")
+        print(f"PCA GWAS correlation: {corr_pca:.4f}")
     else:
         r_squared_normal_full = r_squared_eigen_full = r_squared_pca_full = np.nan
+
+
 
     n_test = X_test.shape[0]
     n_features = X_test.shape[1]
