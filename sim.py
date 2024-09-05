@@ -278,11 +278,10 @@ def simulate_individuals(G: nx.DiGraph, n_individuals: int, node_embeddings: np.
 
 def create_phenotype_function(sequences: Dict[str, str], snp_positions: np.ndarray, 
                               snp_effects: np.ndarray, snp_weight: float = 1.0) -> Callable:
-    """Create a function to generate phenotypes based on genotypes and SNPs."""
-    pattern_weights = np.random.normal(1, 0.2, len(KEY_PATTERNS))
     
     def phenotype_function(genotypes: np.ndarray, node_list: List[str], snp_genotypes: np.ndarray) -> np.ndarray:
         phenotypes = np.zeros(len(genotypes))
+        pattern_weights = np.random.normal(1, 0.2, len(KEY_PATTERNS))
         for i, (genotype, snp_genotype) in enumerate(zip(genotypes, snp_genotypes)):
             pattern_score = sum(sequences[node].count(pattern) * weight 
                                 for node, present in zip(node_list, genotype) if present
@@ -624,6 +623,10 @@ def run_simulation(n_base_seqs: int, seq_length: int, n_variants: int, n_individ
     model_normal, coefficients_normal, p_values_normal = perform_gwas(X_train, y_train)
     model_eigen, coefficients_eigen, p_values_eigen = perform_gwas(X_train_eigen, y_train_eigen)
     model_pca, coefficients_pca, p_values_pca = perform_gwas(X_train_pca, y_train)
+
+    print("Normal GWAS coefficients:", model_normal.coef_)
+    print("Eigenvector GWAS coefficients:", model_eigen.coef_)
+    print("PCA GWAS coefficients:", model_pca.coef_)
 
     y_pred_normal = model_normal.predict(X_test)
     y_pred_eigen = model_eigen.predict(X_test_eigen)
