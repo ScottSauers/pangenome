@@ -508,11 +508,6 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, X_test_pca: np.ndarray, 
     axs[1, 2].set_ylabel("Predicted Phenotype")
     axs[1, 2].legend()
 
-    # Add PCA embedding plot
-    axs[2, 2].scatter(X_test_pca[:, 0], X_test_pca[:, 1], c=y_test, cmap='viridis')
-    axs[2, 2].set_title("PCA Embeddings")
-    axs[2, 2].set_xlabel("PC1")
-    axs[2, 2].set_ylabel("PC2")
 
     # Plot HDBSCAN clustering and scatterplot
     ax3d = fig.add_subplot(3, 3, 7, projection='3d')
@@ -533,7 +528,7 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, X_test_pca: np.ndarray, 
     ax3d.view_init(elev=20, azim=40)
     plt.colorbar(scatter3d, ax=ax3d, label='Phenotype')
     fig.delaxes(axs[2, 0])
-    fig.delaxes(axs[2, 2])
+
     plt.tight_layout() 
 
     # Plot p-values for all GWAS methods
@@ -760,7 +755,7 @@ def main():
         'n_base_seqs': 20,  # Backbone of pangenome graph
         'seq_length': 200,  # How long each base sequence is
         'n_variants': 100,  # Randomly mutate letters. Creates variants which individuals may or may not have
-        'max_individuals': 110000,
+        'max_individuals': 1100000,
         'n_dimensions': 50,  # Maximum number of dimensions equals the number of nodes in the graph
         'n_components': 50,  # Number of PCA components
         'n_snps': 100,  # How many letters may end up influencing phenotype
