@@ -14,6 +14,12 @@ from typing import Tuple, List, Dict, Callable
 from scipy import linalg
 from matplotlib.lines import Line2D
 from mpl_toolkits.mplot3d import Axes3D
+import pandas as pd
+from sklearn.linear_model import Lasso
+from sklearn.feature_selection import f_regression
+import datetime
+import glob
+from matplotlib.colors import LinearSegmentedColormap
 
 # Constants
 BASE_NUCLEOTIDES = ['A', 'T', 'C', 'G']
@@ -227,7 +233,7 @@ def compute_eigenvectors(L: np.ndarray, k: int) -> np.ndarray:
 
 def simulate_individuals(G: nx.DiGraph, n_individuals: int, node_embeddings: np.ndarray, 
                          sequences: Dict[str, str], snp_positions: np.ndarray, 
-                         random_snp_ratio: float = 0.95) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[List[str]]]:
+                         random_snp_ratio: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[List[str]]]:
     """Simulate individuals based on the pangenome graph."""
     node_list = list(G.nodes())
     individuals, genotypes, snp_genotypes, individual_paths = [], [], [], []
@@ -312,16 +318,36 @@ def perform_gwas(X: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, np.ndarray, 
 
     return betas, p_values, intercepts
 
+def perform_lasso_gwas(X: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    n_features = X.shape[1]
+    X = np.nan_to_num(X, nan=0.0)
 
+    # Perform LASSO
+    lasso = Lasso(alpha=0.01, random_state=2024)
+    lasso.fit(X, y)
+
+    # Extract coefficients
+    betas = lasso.coef_
+
+    # Calculate p-values using f_regression
+    _, p_values = f_regression(X, y)
+
+    # Set very small p-values to the smallest possible float
+    p_values = np.maximum(p_values, np.finfo(float).tiny)
+
+    # Calculate intercepts (all the same for LASSO)
+    intercepts = np.full(n_features, lasso.intercept_)
+
+    return betas, p_values, intercepts
 
 def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, X_test_pca: np.ndarray, y_test: np.ndarray, 
-                 y_pred_eigen: np.ndarray, y_pred_normal: np.ndarray, y_pred_pca: np.ndarray,
-                 coefficients_eigen: np.ndarray, coefficients_normal: np.ndarray, coefficients_pca: np.ndarray,
-                 r_squared_eigen: float, r_squared_normal: float, r_squared_pca: float,
-                 p_values_eigen: np.ndarray, p_values_normal: np.ndarray, p_values_pca: np.ndarray,
-                 overall_p_eigen: float, overall_p_normal: float, overall_p_pca: float,
+                 y_pred_eigen: np.ndarray, y_pred_normal: np.ndarray, y_pred_pca: np.ndarray, y_pred_lasso: np.ndarray,
+                 coefficients_eigen: np.ndarray, coefficients_normal: np.ndarray, coefficients_pca: np.ndarray, coefficients_lasso: np.ndarray,
+                 r_squared_eigen: float, r_squared_normal: float, r_squared_pca: float, r_squared_lasso: float,
+                 p_values_eigen: np.ndarray, p_values_normal: np.ndarray, p_values_pca: np.ndarray, p_values_lasso: np.ndarray,
+                 overall_p_eigen: float, overall_p_normal: float, overall_p_pca: float, overall_p_lasso: float,
                  genotypes: np.ndarray, node_list: List[str], individual_paths: List[List[str]],
-                 filename: str, min_cluster_size: int) -> None:
+                 filename: str, min_cluster_size: int, sequences: Dict[str, str], L: np.ndarray, eigenvectors: np.ndarray) -> None:
 
     """Plot the results of the GWAS analysis."""
     fig, axs = plt.subplots(3, 3, figsize=(24, 24))
@@ -336,9 +362,8 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, X_test_pca: np.ndarray, 
 
     fig.suptitle(f"Eigenvector GWAS R² = {r_squared_eigen:.4f} (p = {format_p_value(overall_p_eigen)})\n"
                  f"Normal GWAS R² = {r_squared_normal:.4f} (p = {format_p_value(overall_p_normal)})\n"
+                 f"Lasso GWAS R² = {r_squared_lasso:.4f} (p = {format_p_value(overall_p_lasso)})\n"
                  f"PCA GWAS R² = {r_squared_pca:.4f} (p = {format_p_value(overall_p_pca)})")
-
-
 
     # Create a custom layout
     pos = {}
@@ -346,14 +371,12 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, X_test_pca: np.ndarray, 
     variant_nodes = [node for node in G.nodes() if node.startswith('variant_')]
     alt_nodes = [node for node in G.nodes() if node.startswith('alt_')]
 
-
     # Position base nodes along a curved line
     t = np.linspace(0, np.pi, len(base_nodes))
     x = t
     y = 0.2 * np.sin(t)
     for i, node in enumerate(base_nodes):
         pos[node] = (x[i], y[i])
-
 
     # Position variant and alt nodes
     for node in variant_nodes + alt_nodes:
@@ -365,7 +388,6 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, X_test_pca: np.ndarray, 
             pos[node] = (base_x + distance * np.cos(angle), base_y + distance * np.sin(angle))
         else:
             pos[node] = (np.random.random(), np.random.random())
-
 
     # Ensure all nodes have a position
     for node in G.nodes():
@@ -389,9 +411,6 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, X_test_pca: np.ndarray, 
     axs[0, 0].legend(handles=legend_elements, loc='upper right')
 
     axs[0, 0].axis('off')
-
-
-        
 
     # Individual genomes
     axs[0, 1].set_title("Individual Genomes")
@@ -420,33 +439,32 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, X_test_pca: np.ndarray, 
         ax_inset.set_title(f"Individual {idx}", fontsize=8)
         ax_inset.axis('off')
 
-
-
-
     print("\nNormal GWAS Effect Sizes:")
     print(coefficients_normal)
     print("\nEigenvector GWAS Effect Sizes:")
     print(coefficients_eigen)
     print("\nPCA GWAS Effect Sizes:")
     print(coefficients_pca)
+    print("\nLasso GWAS Effect Sizes:")
+    print(coefficients_lasso)
 
     # Plot effect sizes for all GWAS methods
-    max_features = max(len(coefficients_normal), len(coefficients_eigen), len(coefficients_pca))
+    max_features = max(len(coefficients_normal), len(coefficients_eigen), len(coefficients_pca), len(coefficients_lasso))
     x = np.arange(max_features)
-    width = 0.25
-
+    width = 0.2
 
     # Pad the shorter coefficient arrays with small values
     small_value = 1e-10
     coefficients_normal_padded = np.pad(coefficients_normal, (0, max_features - len(coefficients_normal)), constant_values=small_value)
     coefficients_eigen_padded = np.pad(coefficients_eigen, (0, max_features - len(coefficients_eigen)), constant_values=small_value)
     coefficients_pca_padded = np.pad(coefficients_pca, (0, max_features - len(coefficients_pca)), constant_values=small_value)
-
+    coefficients_lasso_padded = np.pad(coefficients_lasso, (0, max_features - len(coefficients_lasso)), constant_values=small_value)
 
     # Plot the effect sizes on a symlog scale
-    axs[0, 2].bar(x - width, coefficients_normal_padded, width, label='Normal GWAS', alpha=0.7, color='red')
-    axs[0, 2].bar(x, coefficients_eigen_padded, width, label='Eigenvector GWAS', alpha=0.7, color='blue')
-    axs[0, 2].bar(x + width, coefficients_pca_padded, width, label='PCA GWAS', alpha=0.7, color='green')
+    axs[0, 2].bar(x - 1.5*width, coefficients_normal_padded, width, label='Normal GWAS', alpha=0.7, color='red')
+    axs[0, 2].bar(x - 0.5*width, coefficients_eigen_padded, width, label='Eigenvector GWAS', alpha=0.7, color='blue')
+    axs[0, 2].bar(x + 0.5*width, coefficients_pca_padded, width, label='PCA GWAS', alpha=0.7, color='green')
+    axs[0, 2].bar(x + 1.5*width, coefficients_lasso_padded, width, label='Lasso GWAS', alpha=0.7, color='purple')
 
     axs[0, 2].set_title("Effect Sizes for All GWAS Methods (Symlog Scale)")
     axs[0, 2].set_xlabel("Feature Index")
@@ -456,8 +474,6 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, X_test_pca: np.ndarray, 
     axs[0, 2].set_xticks(x[::5])  # Show every 5th tick to avoid crowding
     axs[0, 2].set_xticklabels(range(1, max_features + 1, 5))
 
-
-
     # Plot phenotype distribution
     sns.histplot(y_test, kde=True, ax=axs[1, 1])
     axs[1, 1].set_title("Phenotype Distribution (Test Set)")
@@ -465,10 +481,10 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, X_test_pca: np.ndarray, 
     axs[1, 1].set_ylabel("Frequency")
 
     # Plot predicted vs actual phenotype for all GWAS methods
-
     axs[1, 2].scatter(y_test, y_pred_eigen, alpha=0.6, label='Eigenvector GWAS', color='blue', s=30)
     axs[1, 2].scatter(y_test, y_pred_normal, alpha=0.6, label='Normal GWAS', color='red', s=30)
     axs[1, 2].scatter(y_test, y_pred_pca, alpha=0.6, label='PCA GWAS', color='green', s=30)
+    axs[1, 2].scatter(y_test, y_pred_lasso, alpha=0.6, label='Lasso GWAS', color='purple', s=30)
 
     axs[1, 2].plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 'k--', label='Perfect Prediction')
     axs[1, 2].set_title("Predicted vs Actual Phenotype")
@@ -494,20 +510,146 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, X_test_pca: np.ndarray, 
             xyz = X_test_eigen[class_member_mask]
             ax3d.scatter(xyz[:, 0], xyz[:, 1], xyz[:, 2], s=50, facecolors='none', edgecolors=col, linewidth=0.6, alpha=0.5)
     ax3d.view_init(elev=20, azim=40)
+    ax3d.set_box_aspect((1, 1, 0.5))  # Adjust the box aspect ratio
+    
+    ax3d.xaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
+    ax3d.yaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
+    ax3d.zaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
+
+    ax3d.set_axis_off()
+    
     plt.colorbar(scatter3d, ax=ax3d, label='Phenotype')
-    fig.delaxes(axs[2, 0])
 
-    plt.tight_layout() 
+    def create_ld_matrix(sequences):
+        base_seqs = {k: v for k, v in sequences.items() if k.startswith('base_')}
+        n = len(next(iter(base_seqs.values())))  # Length of each sequence
+        ld_matrix = np.zeros((n, n))
+        for i in range(n):
+            for j in range(i, n):
+                column_i = [seq[i] for seq in base_seqs.values()]
+                column_j = [seq[j] for seq in base_seqs.values()]
+                # Calculate LD based on pairwise letter differences
+                differences = sum(a != b for a, b in zip(column_i, column_j))
+                total_count = len(column_i)
+                ld = differences / total_count
+                ld_matrix[i, j] = ld_matrix[j, i] = ld
+        return ld_matrix
 
-    # Plot p-values for all GWAS methods
-    max_length = max(len(p_values_eigen), len(p_values_normal), len(p_values_pca))
+    def visualize_laplacian(L):
+        return sns.heatmap(L, cmap='coolwarm', center=0)
+
+    def visualize_pangenome_eigenvectors(G, eigenvectors, sequences, ax=None):
+        if ax is None:
+            ax = plt.gca()
+        
+        pos = nx.spring_layout(G, k=0.5, iterations=50)
+        
+        node_colors_1 = eigenvectors[:, 0]
+        node_colors_2 = eigenvectors[:, 1]
+        
+        node_colors_1 = 2 * (node_colors_1 - np.min(node_colors_1)) / (np.max(node_colors_1) - np.min(node_colors_1)) - 1
+        node_colors_2 = 2 * (node_colors_2 - np.min(node_colors_2)) / (np.max(node_colors_2) - np.min(node_colors_2)) - 1
+        
+        def custom_cmap(v1, v2):
+            hue = (v2 + 1) / 2
+            opacity = 0.5 + 0.5 * (1 - abs(v1))
+            return plt.cm.hsv(hue)[:3] + (opacity,)
+        
+        node_colors = [custom_cmap(v1, v2) for v1, v2 in zip(node_colors_1, node_colors_2)]
+        
+        nx.draw_networkx_edges(G, pos, edge_color='gray', width=0.5, alpha=0.6, ax=ax)
+        
+        base_nodes = [node for node in G.nodes() if node.startswith('base_')]
+        variant_nodes = [node for node in G.nodes() if node.startswith('variant_')]
+        alt_nodes = [node for node in G.nodes() if node.startswith('alt_')]
+        
+        nx.draw_networkx_nodes(G, pos, nodelist=base_nodes, node_size=100, 
+                               node_color=[node_colors[list(G.nodes()).index(node)] for node in base_nodes], 
+                               node_shape='o', ax=ax)
+        
+        nx.draw_networkx_nodes(G, pos, nodelist=variant_nodes, node_size=50, 
+                               node_color=[node_colors[list(G.nodes()).index(node)] for node in variant_nodes], 
+                               node_shape='s', ax=ax)
+        
+        nx.draw_networkx_nodes(G, pos, nodelist=alt_nodes, node_size=50, 
+                               node_color=[node_colors[list(G.nodes()).index(node)] for node in alt_nodes], 
+                               node_shape='^', ax=ax)
+        
+        ax.set_title("Pangenome Graph with First Two Eigenvectors")
+        ax.axis('off')
+        
+        gradient = np.linspace(0, 1, 256)
+        gradient = np.vstack((gradient, gradient))
+        cax = ax.inset_axes([1.05, 0.2, 0.05, 0.6])
+        custom_cmap = LinearSegmentedColormap.from_list("custom", ["blue", "green", "red"])
+        cax.imshow(gradient.T, aspect='auto', cmap=custom_cmap)
+        cax.set_title('2nd Eigenvector', fontsize=8)
+        cax.set_xticks([])
+        cax.set_yticks([0, 255])
+        cax.set_yticklabels(['Low', 'High'], fontsize=8)
+        
+        legend_elements = [
+            Line2D([0], [0], marker='o', color='w', label='Base', markerfacecolor='gray', markersize=6),
+            Line2D([0], [0], marker='s', color='w', label='Variant', markerfacecolor='gray', markersize=5),
+            Line2D([0], [0], marker='^', color='w', label='Alternative', markerfacecolor='gray', markersize=5),
+            Line2D([0], [0], marker='o', color='w', label='1st eigenvector: Opacity', markerfacecolor='none', markersize=0),
+        ]
+        ax.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(1, 1), title='Node Types', fontsize=7, title_fontsize=8, markerscale=0.8)
+        
+        return ax
+
+    # Create a 1x2 grid of subplots within the [1, 0] subplot
+    gs = axs[1, 0].get_gridspec()
+    axs[1, 0].remove()
+    subaxs = gs[1, 0].subgridspec(1, 2)
+
+    # LD Matrix
+    ax_ld = fig.add_subplot(subaxs[0])
+    ld_matrix = create_ld_matrix(sequences)
+    sns.heatmap(ld_matrix, ax=ax_ld, cmap='coolwarm', vmin=0, vmax=1, cbar_kws={'aspect': 30})
+    ax_ld.set_title("LD Matrix")
+    ax_ld.set_xlabel("Base Sequence Index")
+    ax_ld.set_ylabel("Base Sequence Index")
+
+    # Pangenome with Eigenvectors
+    ax_pangenome = fig.add_subplot(subaxs[1])
+    visualize_pangenome_eigenvectors(G, eigenvectors, sequences, ax=ax_pangenome)
+    ax_pangenome.set_title("Pangenome Graph with First Eigenvector")
+    # Plot 3D embedding in the [2, 0] position (bottom left)
+    axs[2, 0].remove()  # Remove the existing 2D subplot
+    ax_3d = fig.add_subplot(gs[2, 0], projection='3d')
+    scatter = ax_3d.scatter(X_test_eigen[:, 0], X_test_eigen[:, 1], X_test_eigen[:, 2], c=y_test, cmap='viridis')
+    ax_3d.set_xlabel("Eigenvector 1")
+    ax_3d.set_ylabel("Eigenvector 2")
+    ax_3d.set_zlabel("Eigenvector 3")
+    
+    # Add colorbar for phenotype
+    cbar = plt.colorbar(scatter, ax=ax_3d, pad=0.1)
+    cbar.set_label("Phenotype")
+    
+    # Adjust 3D plot appearance
+    ax_3d.set_box_aspect((1, 1, 0.5))
+    ax_3d.xaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
+    ax_3d.yaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
+    ax_3d.zaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
+    ax_3d.xaxis.line.set_color((0.0, 0.0, 0.0, 1.0))
+    ax_3d.yaxis.line.set_color((0.0, 0.0, 0.0, 1.0))
+    ax_3d.zaxis.line.set_color((0.0, 0.0, 0.0, 1.0))
+    
+    # Adjust spacing
+    plt.tight_layout()
+
+    # Plot p-values for all GWAS methods in the [2, 1] position (bottom middle)
+    max_length = max(len(p_values_eigen), len(p_values_normal), len(p_values_pca), len(p_values_lasso))
     x_eigen = range(1, len(p_values_eigen)+1)
     x_normal = range(1, len(p_values_normal)+1)
     x_pca = range(1, len(p_values_pca)+1)
+    x_lasso = range(1, len(p_values_lasso)+1)
 
     axs[2, 1].bar(x_eigen, -np.log10(p_values_eigen), alpha=0.3, label='Eigenvector GWAS', color='blue')
     axs[2, 1].bar(x_normal, -np.log10(p_values_normal), alpha=0.3, label='Normal GWAS', color='red')
     axs[2, 1].bar(x_pca, -np.log10(p_values_pca), alpha=0.3, label='PCA GWAS', color='green')
+    axs[2, 1].bar(x_lasso, -np.log10(p_values_lasso), alpha=0.3, label='Lasso GWAS', color='purple')
     axs[2, 1].set_title("GWAS -log10(p-values)")
     axs[2, 1].set_xlabel("Feature Index")
     axs[2, 1].set_ylabel("-log10(p-value)")
@@ -515,14 +657,15 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, X_test_pca: np.ndarray, 
     axs[2, 1].set_xlim(0, max_length)
     axs[2, 1].legend()
 
-    corr_matrix = np.corrcoef([y_pred_normal, y_pred_eigen, y_pred_pca, y_test])
+    corr_matrix = np.corrcoef([y_pred_normal, y_pred_eigen, y_pred_pca, y_pred_lasso, y_test])
     sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', vmin=-1, vmax=1, 
-                xticklabels=['Normal', 'Eigen', 'PCA', 'True'], 
-                yticklabels=['Normal', 'Eigen', 'PCA', 'True'], ax=axs[2, 2])
+                xticklabels=['Normal', 'Eigen', 'PCA', 'Lasso', 'True'], 
+                yticklabels=['Normal', 'Eigen', 'PCA', 'Lasso', 'True'], ax=axs[2, 2])
     axs[2, 2].set_title("Correlation Heatmap of Predictions and True Values")
         
     fig.suptitle(f"Eigenvector GWAS R² = {r_squared_eigen:.4f} (p = {format_p_value(overall_p_eigen)})\n"
                  f"Normal GWAS R² = {r_squared_normal:.4f} (p = {format_p_value(overall_p_normal)})\n"
+                 f"Lasso GWAS R² = {r_squared_lasso:.4f} (p = {format_p_value(overall_p_lasso)})\n"
                  f"PCA GWAS R² = {r_squared_pca:.4f} (p = {format_p_value(overall_p_pca)})")
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
@@ -531,10 +674,9 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, X_test_pca: np.ndarray, 
 
 
 
-
 def run_simulation(n_base_seqs: int, seq_length: int, n_variants: int, n_individuals: int, 
                    n_dimensions: int, n_components: int, n_snps: int, snp_weight: float, random_snp_ratio: float,
-                   test_size: float, min_cluster_size: int, seed: int) -> Tuple[float, float, float, float, float, float]:
+                   test_size: float, min_cluster_size: int, seed: int, suppress_plot: bool = False) -> Tuple[float, float, float, float, float, float, float, float]:
 
     """Run a single simulation with the given parameters."""
     G, sequences, snp_positions, snp_effects = create_pangenome_graph(n_base_seqs, seq_length, n_variants, n_snps)
@@ -543,8 +685,7 @@ def run_simulation(n_base_seqs: int, seq_length: int, n_variants: int, n_individ
     L = compute_laplacian(G)
     eigenvectors = compute_eigenvectors(L, n_dimensions)
 
-    individuals, genotypes, snp_genotypes, individual_paths = simulate_individuals(G, n_individuals, eigenvectors, sequences, snp_positions)
-
+    individuals, genotypes, snp_genotypes, individual_paths = simulate_individuals(G, n_individuals, eigenvectors, sequences, snp_positions, random_snp_ratio)
 
     # Remove NaN values
     mask = ~np.isnan(individuals).any(axis=1)
@@ -552,7 +693,6 @@ def run_simulation(n_base_seqs: int, seq_length: int, n_variants: int, n_individ
     genotypes = genotypes[mask]
     snp_genotypes = snp_genotypes[mask]
     individual_paths = [individual_paths[i] for i in range(len(individual_paths)) if mask[i]]
-
 
     # Apply normalization after NaN removal
     individuals = stats.zscore(individuals, axis=0)
@@ -567,16 +707,9 @@ def run_simulation(n_base_seqs: int, seq_length: int, n_variants: int, n_individ
 
     pca = CustomPCA(n_components=n_components)
 
-
-    # Replace NaN with zeros in snp_genotypes
+    # Replace NaN with zeros in snp_genotypes, individuals, and phenotypes
     snp_genotypes = np.nan_to_num(snp_genotypes, nan=0.0)
-
-
-    # Replace NaN with zeros in individuals
     individuals = np.nan_to_num(individuals, nan=0.0)
-
-
-    # Replace NaN with zeros in phenotypes
     phenotypes = np.nan_to_num(phenotypes, nan=0.0)
 
     X_train, X_test, y_train, y_test = train_test_split(snp_genotypes, phenotypes, test_size=test_size, random_state=seed)
@@ -585,17 +718,17 @@ def run_simulation(n_base_seqs: int, seq_length: int, n_variants: int, n_individ
     X_train_pca = pca.fit_transform(X_train)
     X_test_pca = pca.transform(X_test)
 
-
-
     print(f"X_train shape: {X_train.shape}")
 
     coefficients_normal, p_values_normal, intercepts_normal = perform_gwas(X_train, y_train)
     coefficients_eigen, p_values_eigen, intercepts_eigen = perform_gwas(X_train_eigen, y_train_eigen)
     coefficients_pca, p_values_pca, intercepts_pca = perform_gwas(X_train_pca, y_train)
+    coefficients_lasso, p_values_lasso, intercepts_lasso = perform_lasso_gwas(X_train, y_train)
 
     print("Normal GWAS coefficients:", coefficients_normal)
     print("Eigenvector GWAS coefficients:", coefficients_eigen)
     print("PCA GWAS coefficients:", coefficients_pca)
+    print("Lasso GWAS coefficients:", coefficients_lasso)
 
     def z_norm(x):
         return (x - np.mean(x)) / np.std(x)
@@ -603,13 +736,14 @@ def run_simulation(n_base_seqs: int, seq_length: int, n_variants: int, n_individ
     y_pred_normal = np.dot(X_test, coefficients_normal) + np.mean(intercepts_normal)
     y_pred_eigen = np.dot(X_test_eigen, coefficients_eigen) + np.mean(intercepts_eigen)
     y_pred_pca = np.dot(X_test_pca, coefficients_pca) + np.mean(intercepts_pca)
-
+    y_pred_lasso = np.dot(X_test, coefficients_lasso) + np.mean(intercepts_lasso)
 
     # Z-normalize y_test and all predictions
     y_test = z_norm(y_test)
     y_pred_normal = z_norm(y_pred_normal)
     y_pred_eigen = z_norm(y_pred_eigen)
     y_pred_pca = z_norm(y_pred_pca)
+    y_pred_lasso = z_norm(y_pred_lasso)
 
     def unadjusted_r2(y_true, y_pred):
         return np.corrcoef(y_true, y_pred)[0, 1]**2
@@ -618,23 +752,25 @@ def run_simulation(n_base_seqs: int, seq_length: int, n_variants: int, n_individ
         r_squared_normal_full = unadjusted_r2(y_test, y_pred_normal)
         r_squared_eigen_full = unadjusted_r2(y_test, y_pred_eigen)
         r_squared_pca_full = unadjusted_r2(y_test, y_pred_pca)
+        r_squared_lasso_full = unadjusted_r2(y_test, y_pred_lasso)
 
         print("Y_test range:", np.min(y_test), np.max(y_test))
         print("Y_pred_normal range:", np.min(y_pred_normal), np.max(y_pred_normal))
         print("Y_pred_eigen range:", np.min(y_pred_eigen), np.max(y_pred_eigen))
         print("Y_pred_pca range:", np.min(y_pred_pca), np.max(y_pred_pca))
+        print("Y_pred_lasso range:", np.min(y_pred_lasso), np.max(y_pred_lasso))
         
         corr_normal = np.corrcoef(y_test, y_pred_normal)[0, 1]
         corr_eigen = np.corrcoef(y_test, y_pred_eigen)[0, 1]
         corr_pca = np.corrcoef(y_test, y_pred_pca)[0, 1]
+        corr_lasso = np.corrcoef(y_test, y_pred_lasso)[0, 1]
         
         print(f"Normal GWAS correlation: {corr_normal:.4f}")
         print(f"Eigenvector GWAS correlation: {corr_eigen:.4f}")
         print(f"PCA GWAS correlation: {corr_pca:.4f}")
+        print(f"Lasso GWAS correlation: {corr_lasso:.4f}")
     else:
-        r_squared_normal_full = r_squared_eigen_full = r_squared_pca_full = np.nan
-
-
+        r_squared_normal_full = r_squared_eigen_full = r_squared_pca_full = r_squared_lasso_full = np.nan
 
     n_test = X_test.shape[0]
     n_features = X_test.shape[1]
@@ -648,6 +784,7 @@ def run_simulation(n_base_seqs: int, seq_length: int, n_variants: int, n_individ
     overall_p_normal = calculate_p_value(r_squared_normal_full, n_test, X_test.shape[1])
     overall_p_eigen = calculate_p_value(r_squared_eigen_full, n_test, X_test_eigen.shape[1])
     overall_p_pca = calculate_p_value(r_squared_pca_full, n_test, X_test_pca.shape[1])
+    overall_p_lasso = calculate_p_value(r_squared_lasso_full, n_test, X_test.shape[1])
     print(f"Sample size: {n_individuals}")
     
     print(f"Number of SNPs: {n_snps}")
@@ -659,92 +796,161 @@ def run_simulation(n_base_seqs: int, seq_length: int, n_variants: int, n_individ
     print(f"Normal GWAS R²: {r_squared_normal_full:.4f}")
     print(f"Eigenvector GWAS R²: {r_squared_eigen_full:.4f}")
     print(f"PCA GWAS R²: {r_squared_pca_full:.4f}")
+    print(f"Lasso GWAS R²: {r_squared_lasso_full:.4f}")
     print(f"Normal GWAS p-value: {overall_p_normal:.4e}")
     print(f"Eigenvector GWAS p-value: {overall_p_eigen:.4e}")
     print(f"PCA GWAS p-value: {overall_p_pca:.4e}")
+    print(f"Lasso GWAS p-value: {overall_p_lasso:.4e}")
 
     filename = f"results_{n_individuals}.png"
     plot_results(G, X_test_eigen, X_test_pca, y_test, 
-                 y_pred_eigen, y_pred_normal, y_pred_pca,
-                 coefficients_eigen, coefficients_normal, coefficients_pca,
-                 r_squared_eigen_full, r_squared_normal_full, r_squared_pca_full,
-                 p_values_eigen, p_values_normal, p_values_pca,
-                 overall_p_eigen, overall_p_normal, overall_p_pca,
-                 genotypes, node_list, individual_paths, filename, min_cluster_size)
+                 y_pred_eigen, y_pred_normal, y_pred_pca, y_pred_lasso,
+                 coefficients_eigen, coefficients_normal, coefficients_pca, coefficients_lasso,
+                 r_squared_eigen_full, r_squared_normal_full, r_squared_pca_full, r_squared_lasso_full,
+                 p_values_eigen, p_values_normal, p_values_pca, p_values_lasso,
+                 overall_p_eigen, overall_p_normal, overall_p_pca, overall_p_lasso,
+                 genotypes, node_list, individual_paths, filename, min_cluster_size,
+                 sequences, L, eigenvectors)
 
-    os.system(f"open {filename}")
-    return r_squared_eigen_full, r_squared_normal_full, r_squared_pca_full, overall_p_eigen, overall_p_normal, overall_p_pca
+    if not suppress_plot:
+        os.system(f"open {filename}")
+    return r_squared_eigen_full, r_squared_normal_full, r_squared_pca_full, r_squared_lasso_full, overall_p_eigen, overall_p_normal, overall_p_pca, overall_p_lasso
 
+def run_varied_parameter_simulation(**params):
+    vary_param = params.pop('vary_param')
+    csv_filename = params.pop('csv_filename')
+    suppress_plot = params.pop('suppress_plot')
+    max_individuals = params.pop('max_individuals')
+    min_individuals = params.pop('min_individuals')
+    num_steps = params.pop('num_steps')
 
+    if vary_param == 'n_individuals':
+        param_values = np.logspace(np.log10(min_individuals), np.log10(max_individuals), num_steps).astype(int)
+    else:
+        param_values = np.linspace(params[vary_param] * 0.125, params[vary_param] * 8, num_steps)
 
-def compare_sample_sizes(n_base_seqs: int, seq_length: int, n_variants: int, max_individuals: int, 
-                         n_dimensions: int, n_components: int, n_snps: int, snp_weight: float, random_snp_ratio: float,
-                         min_individuals: int, num_steps: int, test_size: float, min_cluster_size: int,
-                         seed: int) -> None:
-    """Compare GWAS performance across different sample sizes."""
-    
-    # Create a log space between min_individuals and max_individuals
-    sample_sizes = np.logspace(np.log10(min_individuals), np.log10(max_individuals), num=num_steps).astype(int)
-    sample_sizes = np.maximum(sample_sizes, n_dimensions + 1)  # Sample size is greater than n_dimensions
-    
-    sample_sizes = np.unique(sample_sizes)
+    results = []
+    for value in param_values:
+        current_params = params.copy()
+        current_params[vary_param] = value
+        r2_eigen, r2_normal, r2_pca, r2_lasso, p_eigen, p_normal, p_pca, p_lasso = run_simulation(**current_params, suppress_plot=suppress_plot)
+        
+        result = {
+            vary_param: value,
+            'r2_eigen': r2_eigen,
+            'r2_normal': r2_normal,
+            'r2_pca': r2_pca,
+            'r2_lasso': r2_lasso,
+            'p_eigen': p_eigen,
+            'p_normal': p_normal,
+            'p_pca': p_pca,
+            'p_lasso': p_lasso
+        }
+        results.append(result)
+        
+        # Save results to CSV in real-time
+        save_results_to_csv(results, csv_filename)
 
-    eigen_r2, normal_r2, pca_r2, eigen_p, normal_p, pca_p = [], [], [], [], [], []
-    
-    for n_individuals in tqdm(sample_sizes, desc="Simulating different sample sizes"):
-        r2_eigen, r2_normal, r2_pca, p_eigen, p_normal, p_pca = run_simulation(
-            n_base_seqs, seq_length, n_variants, n_individuals, n_dimensions, n_components, n_snps, snp_weight,
-            random_snp_ratio, test_size, min_cluster_size, seed
-        )
-        eigen_r2.append(r2_eigen)
-        normal_r2.append(r2_normal)
-        pca_r2.append(r2_pca)
-        eigen_p.append(p_eigen)
-        normal_p.append(p_normal)
-        pca_p.append(p_pca)
+    plot_varied_parameter_results(results, vary_param, suppress_plot)
+    return results
 
-    print("Simulation results:")
-    for i, n in enumerate(sample_sizes):
-        print(f"Sample size: {n}")
-        print(f"  Eigenvector GWAS R²: {eigen_r2[i]:.4f}, p-value: {eigen_p[i]:.4e}")
-        print(f"  Normal GWAS R²: {normal_r2[i]:.4f}, p-value: {normal_p[i]:.4e}")
-        print(f"  PCA GWAS R²: {pca_r2[i]:.4f}, p-value: {pca_p[i]:.4e}")
+def save_results_to_csv(results, filename):
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamped_filename = f"{filename.rsplit('.', 1)[0]}_{timestamp}.csv"
+    df = pd.DataFrame(results)
+    df.to_csv(timestamped_filename, index=False)
+    print(f"Results saved to {timestamped_filename}")
+
+def plot_varied_parameter_results(results, vary_param, suppress_plot):
+    df = pd.DataFrame(results)
     
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 16))
         
-    ax1.semilogx(sample_sizes, eigen_r2, label='Eigenvector GWAS', marker='o')
-    ax1.semilogx(sample_sizes, normal_r2, label='Normal GWAS', marker='s')
-    ax1.semilogx(sample_sizes, pca_r2, label='PCA GWAS', marker='^')
-    ax1.set_xlabel('Number of Individuals (log scale)')
+    ax1.semilogx(df[vary_param], df['r2_eigen'], label='Eigenvector GWAS', marker='o')
+    ax1.semilogx(df[vary_param], df['r2_normal'], label='Normal GWAS', marker='s')
+    ax1.semilogx(df[vary_param], df['r2_pca'], label='PCA GWAS', marker='^')
+    ax1.semilogx(df[vary_param], df['r2_lasso'], label='Lasso GWAS', marker='D')
+    ax1.set_xlabel(f'{vary_param} (log scale)')
     ax1.set_ylabel('R² Score')
-    ax1.set_title('R² Score vs Sample Size')
+    ax1.set_title('R² Score vs ' + vary_param)
     ax1.legend()
     ax1.grid(True, linestyle='--', alpha=0.7)
     ax1.set_ylim(bottom=0)
         
-    ax2.semilogx(sample_sizes, [-np.log10(p) if not np.isnan(p) and p > 0 else 0 for p in eigen_p], label='Eigenvector GWAS')
-    ax2.semilogx(sample_sizes, [-np.log10(p) if not np.isnan(p) and p > 0 else 0 for p in normal_p], label='Normal GWAS')
-    ax2.semilogx(sample_sizes, [-np.log10(p) if not np.isnan(p) and p > 0 else 0 for p in pca_p], label='PCA GWAS')
-    ax2.set_xlabel('Number of Individuals (log scale)')
+    ax2.semilogx(df[vary_param], [-np.log10(p) if not np.isnan(p) and p > 0 else 0 for p in df['p_eigen']], label='Eigenvector GWAS')
+    ax2.semilogx(df[vary_param], [-np.log10(p) if not np.isnan(p) and p > 0 else 0 for p in df['p_normal']], label='Normal GWAS')
+    ax2.semilogx(df[vary_param], [-np.log10(p) if not np.isnan(p) and p > 0 else 0 for p in df['p_pca']], label='PCA GWAS')
+    ax2.semilogx(df[vary_param], [-np.log10(p) if not np.isnan(p) and p > 0 else 0 for p in df['p_lasso']], label='Lasso GWAS')
+    ax2.set_xlabel(f'{vary_param} (log scale)')
     ax2.set_ylabel('-log10(p-value)')
-    ax2.set_title('Significance vs Sample Size')
+    ax2.set_title('Significance vs ' + vary_param)
     ax2.legend()
     ax2.grid(True, linestyle='--', alpha=0.7)
 
-    print("R² scores:")
-    print("Eigenvector GWAS:", eigen_r2)
-    print("Normal GWAS:", normal_r2)
-    print("PCA GWAS:", pca_r2)
-    print("\np-values:")
-    print("Eigenvector GWAS:", eigen_p)
-    print("Normal GWAS:", normal_p)
-    print("PCA GWAS:", pca_p)
+    plt.tight_layout()
+    plt.savefig(f"{vary_param}_comparison.png")
+    if not suppress_plot:
+        plt.show()
+    plt.close()
+    print(f"{vary_param} comparison plot saved as '{vary_param}_comparison.png'")
+
+def run_multiple_simulations(params, num_repeats=1):
+    """Run multiple simulations and aggregate results."""
+    all_results = []
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    for i in range(num_repeats):
+        print(f"Running simulation {i+1}/{num_repeats}")
+        csv_filename = f"simulation_results_{timestamp}_{i+1}.csv"
+        params['csv_filename'] = csv_filename
+        results = run_varied_parameter_simulation(**params)
+        all_results.extend(results)
+        
+    # Aggregate results
+    df = pd.DataFrame(all_results)
+    
+    # Calculate median R² and p-values
+    median_results = df.groupby(params['vary_param']).agg({
+        'r2_eigen': lambda x: np.median([r for r in x if r > -1 and not np.isnan(r)]),
+        'r2_normal': lambda x: np.median([r for r in x if r > -1 and not np.isnan(r)]),
+        'r2_pca': lambda x: np.median([r for r in x if r > -1 and not np.isnan(r)]),
+        'r2_lasso': lambda x: np.median([r for r in x if r > -1 and not np.isnan(r)]),
+        'p_eigen': 'median',
+        'p_normal': 'median',
+        'p_pca': 'median',
+        'p_lasso': 'median'
+    }).reset_index()
+    
+    # Plot median R² and p-values
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 16))
+    
+    ax1.semilogx(median_results[params['vary_param']], median_results['r2_eigen'], label='Eigenvector GWAS', marker='o')
+    ax1.semilogx(median_results[params['vary_param']], median_results['r2_normal'], label='Normal GWAS', marker='s')
+    ax1.semilogx(median_results[params['vary_param']], median_results['r2_pca'], label='PCA GWAS', marker='^')
+    ax1.semilogx(median_results[params['vary_param']], median_results['r2_lasso'], label='Lasso GWAS', marker='D')
+    ax1.set_xlabel(f'{params["vary_param"]} (log scale)')
+    ax1.set_ylabel('Median R² Score')
+    ax1.set_title(f'Median R² Score vs {params["vary_param"]} ({num_repeats} repeats)')
+    ax1.legend()
+    ax1.grid(True, linestyle='--', alpha=0.7)
+    ax1.set_ylim(bottom=0)
+    
+    ax2.semilogx(median_results[params['vary_param']], -np.log10(median_results['p_eigen']), label='Eigenvector GWAS', marker='o')
+    ax2.semilogx(median_results[params['vary_param']], -np.log10(median_results['p_normal']), label='Normal GWAS', marker='s')
+    ax2.semilogx(median_results[params['vary_param']], -np.log10(median_results['p_pca']), label='PCA GWAS', marker='^')
+    ax2.semilogx(median_results[params['vary_param']], -np.log10(median_results['p_lasso']), label='Lasso GWAS', marker='D')
+    ax2.set_xlabel(f'{params["vary_param"]} (log scale)')
+    ax2.set_ylabel('Median -log10(p-value)')
+    ax2.set_title(f'Median Significance vs {params["vary_param"]} ({num_repeats} repeats)')
+    ax2.legend()
+    ax2.grid(True, linestyle='--', alpha=0.7)
     
     plt.tight_layout()
-    plt.savefig("sample_size_comparison.png")
+    plt.savefig(f"{params['vary_param']}_comparison_median_{num_repeats}_repeats.png")
+    if not params['suppress_plot']:
+        plt.show()
     plt.close()
-    print("Sample size comparison plot saved as 'sample_size_comparison.png'")
-    os.system(f"open sample_size_comparison.png")
+    print(f"Median comparison plot saved as '{params['vary_param']}_comparison_median_{num_repeats}_repeats.png'")
 
 def main():
     """Main execution function."""
@@ -752,30 +958,34 @@ def main():
     
     # Simulation parameters
     params = {
-        'n_base_seqs': 20,  # Backbone of pangenome graph
-        'seq_length': 200,  # How long each base sequence is
-        'n_variants': 100,  # Randomly mutate letters. Creates variants which individuals may or may not have
-        'max_individuals': 1100000,
-        'n_dimensions': 50,  # Maximum number of dimensions equals the number of nodes in the graph
-        'n_components': 50,  # Number of PCA components
-        'n_snps': 100,  # How many letters may end up influencing phenotype
-        'snp_weight': 1.0,
-        'random_snp_ratio': 0.95,  # Ratio of random SNPs to sequence-based SNPs
-        'min_individuals': 15,  # Minimum number of individuals
-        'num_steps': 20,  # Number of steps between min and max individuals
-        'test_size': 0.5,  # Test set size for train-test split
-        'min_cluster_size': 5,  # Minimum cluster size for HDBSCAN
-        'seed': 2024,
+        'n_base_seqs': 20,        # Number of base sequences forming the backbone of the pangenome graph
+        'seq_length': 200,        # Length of each base sequence
+        'n_variants': 100,        # Number of variant sequences to generate (randomly mutated from base sequences)
+        'n_individuals': 1000,    # Initial number of individuals to simulate
+        'max_individuals': 100000, # Maximum number of individuals
+        'n_dimensions': 50,       # Number of dimensions for eigenvector decomposition (max: number of graph nodes)
+        'n_components': 50,       # Number of principal components to use in PCA GWAS
+        'n_snps': 100,            # Number of single nucleotide polymorphisms (SNPs) that may influence phenotype
+        'snp_weight': 1.0,        # Weight of SNP effects on phenotype
+        'random_snp_ratio': 0.95, # Ratio of random SNPs to sequence-based SNPs
+        'min_individuals': 15,    # Minimum number of individuals
+        'num_steps': 20,          # Number of steps between min and max individuals for scaling
+        'test_size': 0.5,         # Proportion of data to use as test set in train-test split
+        'min_cluster_size': 5,    # Minimum cluster size for HDBSCAN clustering algorithm
+        'seed': 2024,             # Random seed
+        'suppress_plot': False,    # Whether to suppress plot display
+        'vary_param': 'n_individuals', # Parameter to vary in scaling experiments
+        'csv_filename': 'simulation_results.csv' # Filename for saving simulation results
     }
 
-    
     print("Simulation parameters:")
     for key, value in params.items():
         print(f"{key}: {value}")
 
     print("Starting pangenome GWAS simulation...")
-    compare_sample_sizes(**params)
-    print("Simulation completed. Check the generated plots for results.")
+    num_repeats = 5
+    run_multiple_simulations(params, num_repeats)
+    print("Simulation completed. Check the generated plots and CSV files for results.")
 
     # Print example sequences
     G, sequences, _, _ = create_pangenome_graph(params['n_base_seqs'], params['seq_length'], params['n_variants'], params['n_snps'])
