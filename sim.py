@@ -20,6 +20,7 @@ from sklearn.feature_selection import f_regression
 import datetime
 import glob
 from matplotlib.colors import LinearSegmentedColormap
+import time
 
 # Constants
 BASE_NUCLEOTIDES = ['A', 'T', 'C', 'G']
@@ -90,19 +91,29 @@ def create_sequence(length: int) -> str:
     """Create a random DNA sequence of given length."""
     return ''.join(np.random.choice(BASE_NUCLEOTIDES, size=length))
 
-def mutate_sequence(sequence: str, mutation_rate: float = DEFAULT_MUTATION_RATE) -> str:
-    """Mutate a given DNA sequence with a specified mutation rate."""
-    return ''.join(np.random.choice(BASE_NUCLEOTIDES) if np.random.random() < mutation_rate else base
-                   for base in sequence)
-
-
+def mutate_sequence(sequence: str, mutation_rate: float = DEFAULT_MUTATION_RATE, window_size: int = 5, ld_strength: float = 0.7) -> str:
+    """Mutate a given DNA sequence with a specified mutation rate and linkage disequilibrium."""
+    mutated_seq = list(sequence)
+    for i in range(len(sequence)):
+        if np.random.random() < mutation_rate:
+            # Mutate the current base
+            mutated_seq[i] = np.random.choice([base for base in BASE_NUCLEOTIDES if base != sequence[i]])
+            
+            # Apply LD: Correlated mutations within the window
+            for j in range(max(0, i - window_size), min(len(sequence), i + window_size + 1)):
+                if i != j:
+                    ld_probability = ld_strength * (1 - abs(i - j) / window_size)
+                    if np.random.random() < ld_probability:
+                        mutated_seq[j] = np.random.choice([base for base in BASE_NUCLEOTIDES if base != sequence[j]])
+    
+    return ''.join(mutated_seq)
 
 
 
 
 
 def create_pangenome_graph(n_base_seqs: int, seq_length: int, n_variants: int, n_snps: int) -> Tuple[nx.DiGraph, Dict[str, str], np.ndarray, np.ndarray]:
-    """Create a pangenome graph."""
+    """Create a pangenome graph with linkage disequilibrium."""
     G = nx.DiGraph()
     sequences = {}
     snp_positions = np.random.choice(seq_length, size=n_snps, replace=False)
@@ -124,6 +135,18 @@ def create_pangenome_graph(n_base_seqs: int, seq_length: int, n_variants: int, n
     shared_alt_prob = 0.2
     max_branches_per_base = 3
 
+    def mutate_with_linkage(sequence: str, mutation_rate: float = DEFAULT_MUTATION_RATE, linkage_distance: int = 5) -> str:
+        """Mutate a sequence with linkage disequilibrium."""
+        mutated_seq = list(sequence)
+        for i in range(len(sequence)):
+            if np.random.random() < mutation_rate:
+                mutated_seq[i] = np.random.choice([base for base in BASE_NUCLEOTIDES if base != sequence[i]])
+                # Introduce correlated mutations in nearby positions
+                for j in range(max(0, i - linkage_distance), min(len(sequence), i + linkage_distance + 1)):
+                    if i != j and np.random.random() < mutation_rate * 0.1:  # Chance of correlated mutation
+                        mutated_seq[j] = np.random.choice([base for base in BASE_NUCLEOTIDES if base != sequence[j]])
+        return ''.join(mutated_seq)
+
     for base_index in range(n_base_seqs - 1):
         branches = 0
         while branches < max_branches_per_base and np.random.random() < 0.7:
@@ -133,7 +156,7 @@ def create_pangenome_graph(n_base_seqs: int, seq_length: int, n_variants: int, n
             prev_node = f"base_{base_index}"
             start_position = base_index
             for j in range(branch_length):
-                var_seq = mutate_sequence(sequences[prev_node])
+                var_seq = mutate_with_linkage(sequences[prev_node])
                 node_name = f"{branch_type}_{variant_counter}"
                 variant_counter += 1
                 position = start_position + j
@@ -528,10 +551,10 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, X_test_pca: np.ndarray, 
             for j in range(i, n):
                 column_i = [seq[i] for seq in base_seqs.values()]
                 column_j = [seq[j] for seq in base_seqs.values()]
-                # Calculate LD based on pairwise letter differences
-                differences = sum(a != b for a, b in zip(column_i, column_j))
+                # Calculate LD based on pairwise letter similarities
+                similarities = sum(a == b for a, b in zip(column_i, column_j))
                 total_count = len(column_i)
-                ld = differences / total_count
+                ld = similarities / total_count
                 ld_matrix[i, j] = ld_matrix[j, i] = ld
         return ld_matrix
 
@@ -954,7 +977,7 @@ def run_multiple_simulations(params, num_repeats=1):
 
 def main():
     """Main execution function."""
-    set_random_seed()
+    #set_random_seed()
     
     # Simulation parameters
     params = {
@@ -972,8 +995,8 @@ def main():
         'num_steps': 20,          # Number of steps between min and max individuals for scaling
         'test_size': 0.5,         # Proportion of data to use as test set in train-test split
         'min_cluster_size': 5,    # Minimum cluster size for HDBSCAN clustering algorithm
-        'seed': 2024,             # Random seed
-        'suppress_plot': False,    # Whether to suppress plot display
+        'seed': int(time.time()),  # Random seed based on current time
+        'suppress_plot': True,    # Whether to suppress plot display
         'vary_param': 'n_individuals', # Parameter to vary in scaling experiments
         'csv_filename': 'simulation_results.csv' # Filename for saving simulation results
     }
