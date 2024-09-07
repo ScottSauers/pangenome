@@ -186,28 +186,34 @@ def generate_individual_path(G: nx.DiGraph, target_length: int) -> List[str]:
         neighbors = list(G.successors(current_node))
         if not neighbors:
             break
-
+        # Separate base nodes and alternative nodes
         base_nodes = [n for n in neighbors if n.startswith('base_')]
         alt_nodes = [n for n in neighbors if not n.startswith('base_')]
 
         if in_alternative:
             if alt_nodes and np.random.random() < alternative_decay:
+                # Continue in alternative path with decay
                 next_node = np.random.choice(alt_nodes)
                 alternative_decay *= 0.9
             elif base_nodes:
+                # Return to base path
                 next_node = min(base_nodes, key=lambda x: abs(int(x.split('_')[1]) - G.nodes[current_node]['position']))
                 in_alternative = False
             else:
+                # Fallback: choose randomly
                 next_node = np.random.choice(neighbors)
         else:
             if base_nodes and alt_nodes:
                 if np.random.random() < 0.2:
+                    # 20% chance to enter alternative path
                     next_node = np.random.choice(alt_nodes)
                     in_alternative = True
                     alternative_decay = 0.9
                 else:
+                    # Stay on base path
                     next_node = min(base_nodes, key=lambda x: abs(int(x.split('_')[1]) - G.nodes[current_node]['position']))
             else:
+                # Fallback: choose randomly
                 next_node = np.random.choice(neighbors)
 
         path.append(next_node)
@@ -281,7 +287,7 @@ def simulate_individuals(G: nx.DiGraph, n_individuals: int, node_embeddings: np.
 
         # Calculate individual embedding
         path_indices = [node_list.index(node) for node in individual_path]
-        individual_embedding = node_embeddings[path_indices].sum(axis=0)  # Changed from mean to sum
+        individual_embedding = node_embeddings[path_indices].sum(axis=0)
         individual_embedding /= np.linalg.norm(individual_embedding)  # Normalize the embedding
         
         # Generate SNP genotypes
@@ -412,7 +418,7 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, X_test_pca: np.ndarray, 
         else:
             pos[node] = (np.random.random(), np.random.random())
 
-    # Ensure all nodes have a position
+    # All nodes have a position
     for node in G.nodes():
         if node not in pos:
             pos[node] = (np.random.random(), np.random.random())
@@ -533,7 +539,7 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, X_test_pca: np.ndarray, 
             xyz = X_test_eigen[class_member_mask]
             ax3d.scatter(xyz[:, 0], xyz[:, 1], xyz[:, 2], s=50, facecolors='none', edgecolors=col, linewidth=0.6, alpha=0.5)
     ax3d.view_init(elev=20, azim=40)
-    ax3d.set_box_aspect((1, 1, 0.5))  # Adjust the box aspect ratio
+    ax3d.set_box_aspect((1, 1, 0.5))
     
     ax3d.xaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
     ax3d.yaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
@@ -695,13 +701,27 @@ def plot_results(G: nx.Graph, X_test_eigen: np.ndarray, X_test_pca: np.ndarray, 
     plt.savefig(filename)
     plt.close()
 
-
-
-def run_simulation(n_base_seqs: int, seq_length: int, n_variants: int, n_individuals: int, 
-                   n_dimensions: int, n_components: int, n_snps: int, snp_weight: float, random_snp_ratio: float,
-                   test_size: float, min_cluster_size: int, seed: int, suppress_plot: bool = False) -> Tuple[float, float, float, float, float, float, float, float]:
-
+def run_simulation(**kwargs) -> Tuple[float, float, float, float, float, float, float, float]:
     """Run a single simulation with the given parameters."""
+    n_base_seqs = kwargs.get('n_base_seqs')
+    seq_length = kwargs.get('seq_length')
+    n_variants = kwargs.get('n_variants')
+    n_snps = kwargs.get('n_snps')
+    n_dimensions = kwargs.get('n_dimensions')
+    n_individuals = kwargs.get('n_individuals')
+    random_snp_ratio = kwargs.get('random_snp_ratio')
+    snp_weight = kwargs.get('snp_weight')
+    n_components = kwargs.get('n_components')
+    test_size = kwargs.get('test_size')
+    seed = kwargs.get('seed')
+    min_cluster_size = kwargs.get('min_cluster_size')
+    suppress_plot = kwargs.get('suppress_plot')
+    max_individuals = kwargs.get('max_individuals')
+    min_individuals = kwargs.get('min_individuals')
+    num_steps = kwargs.get('num_steps')
+    vary_param = kwargs.get('vary_param')
+    csv_filename = kwargs.get('csv_filename')
+
     G, sequences, snp_positions, snp_effects = create_pangenome_graph(n_base_seqs, seq_length, n_variants, n_snps)
     node_list = list(G.nodes())
 
@@ -843,12 +863,14 @@ def run_varied_parameter_simulation(**params):
     vary_param = params.pop('vary_param')
     csv_filename = params.pop('csv_filename')
     suppress_plot = params.pop('suppress_plot')
-    max_individuals = params.pop('max_individuals')
-    min_individuals = params.pop('min_individuals')
     num_steps = params.pop('num_steps')
 
     if vary_param == 'n_individuals':
+        max_individuals = params.pop('max_individuals')
+        min_individuals = params.pop('min_individuals')
         param_values = np.logspace(np.log10(min_individuals), np.log10(max_individuals), num_steps).astype(int)
+    elif vary_param == 'random_snp_ratio':
+        param_values = np.linspace(0, 1, num_steps)
     else:
         param_values = np.linspace(params[vary_param] * 0.125, params[vary_param] * 8, num_steps)
 
@@ -889,22 +911,22 @@ def plot_varied_parameter_results(results, vary_param, suppress_plot):
     
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 16))
         
-    ax1.semilogx(df[vary_param], df['r2_eigen'], label='Eigenvector GWAS', marker='o')
-    ax1.semilogx(df[vary_param], df['r2_normal'], label='Normal GWAS', marker='s')
-    ax1.semilogx(df[vary_param], df['r2_pca'], label='PCA GWAS', marker='^')
-    ax1.semilogx(df[vary_param], df['r2_lasso'], label='Lasso GWAS', marker='D')
-    ax1.set_xlabel(f'{vary_param} (log scale)')
+    ax1.plot(df[vary_param], df['r2_eigen'], label='Eigenvector GWAS', marker='o')
+    ax1.plot(df[vary_param], df['r2_normal'], label='Normal GWAS', marker='s')
+    ax1.plot(df[vary_param], df['r2_pca'], label='PCA GWAS', marker='^')
+    ax1.plot(df[vary_param], df['r2_lasso'], label='Lasso GWAS', marker='D')
+    ax1.set_xlabel(vary_param)
     ax1.set_ylabel('R² Score')
     ax1.set_title('R² Score vs ' + vary_param)
     ax1.legend()
     ax1.grid(True, linestyle='--', alpha=0.7)
     ax1.set_ylim(bottom=0)
         
-    ax2.semilogx(df[vary_param], [-np.log10(p) if not np.isnan(p) and p > 0 else 0 for p in df['p_eigen']], label='Eigenvector GWAS')
-    ax2.semilogx(df[vary_param], [-np.log10(p) if not np.isnan(p) and p > 0 else 0 for p in df['p_normal']], label='Normal GWAS')
-    ax2.semilogx(df[vary_param], [-np.log10(p) if not np.isnan(p) and p > 0 else 0 for p in df['p_pca']], label='PCA GWAS')
-    ax2.semilogx(df[vary_param], [-np.log10(p) if not np.isnan(p) and p > 0 else 0 for p in df['p_lasso']], label='Lasso GWAS')
-    ax2.set_xlabel(f'{vary_param} (log scale)')
+    ax2.plot(df[vary_param], [-np.log10(p) if not np.isnan(p) and p > 0 else 0 for p in df['p_eigen']], label='Eigenvector GWAS')
+    ax2.plot(df[vary_param], [-np.log10(p) if not np.isnan(p) and p > 0 else 0 for p in df['p_normal']], label='Normal GWAS')
+    ax2.plot(df[vary_param], [-np.log10(p) if not np.isnan(p) and p > 0 else 0 for p in df['p_pca']], label='PCA GWAS')
+    ax2.plot(df[vary_param], [-np.log10(p) if not np.isnan(p) and p > 0 else 0 for p in df['p_lasso']], label='Lasso GWAS')
+    ax2.set_xlabel(vary_param)
     ax2.set_ylabel('-log10(p-value)')
     ax2.set_title('Significance vs ' + vary_param)
     ax2.legend()
@@ -947,22 +969,22 @@ def run_multiple_simulations(params, num_repeats=1):
     # Plot median R² and p-values
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 16))
     
-    ax1.semilogx(median_results[params['vary_param']], median_results['r2_eigen'], label='Eigenvector GWAS', marker='o')
-    ax1.semilogx(median_results[params['vary_param']], median_results['r2_normal'], label='Normal GWAS', marker='s')
-    ax1.semilogx(median_results[params['vary_param']], median_results['r2_pca'], label='PCA GWAS', marker='^')
-    ax1.semilogx(median_results[params['vary_param']], median_results['r2_lasso'], label='Lasso GWAS', marker='D')
-    ax1.set_xlabel(f'{params["vary_param"]} (log scale)')
+    ax1.plot(median_results[params['vary_param']], median_results['r2_eigen'], label='Eigenvector GWAS', marker='o')
+    ax1.plot(median_results[params['vary_param']], median_results['r2_normal'], label='Normal GWAS', marker='s')
+    ax1.plot(median_results[params['vary_param']], median_results['r2_pca'], label='PCA GWAS', marker='^')
+    ax1.plot(median_results[params['vary_param']], median_results['r2_lasso'], label='Lasso GWAS', marker='D')
+    ax1.set_xlabel(params['vary_param'])
     ax1.set_ylabel('Median R² Score')
     ax1.set_title(f'Median R² Score vs {params["vary_param"]} ({num_repeats} repeats)')
     ax1.legend()
     ax1.grid(True, linestyle='--', alpha=0.7)
     ax1.set_ylim(bottom=0)
     
-    ax2.semilogx(median_results[params['vary_param']], -np.log10(median_results['p_eigen']), label='Eigenvector GWAS', marker='o')
-    ax2.semilogx(median_results[params['vary_param']], -np.log10(median_results['p_normal']), label='Normal GWAS', marker='s')
-    ax2.semilogx(median_results[params['vary_param']], -np.log10(median_results['p_pca']), label='PCA GWAS', marker='^')
-    ax2.semilogx(median_results[params['vary_param']], -np.log10(median_results['p_lasso']), label='Lasso GWAS', marker='D')
-    ax2.set_xlabel(f'{params["vary_param"]} (log scale)')
+    ax2.plot(median_results[params['vary_param']], -np.log10(median_results['p_eigen']), label='Eigenvector GWAS', marker='o')
+    ax2.plot(median_results[params['vary_param']], -np.log10(median_results['p_normal']), label='Normal GWAS', marker='s')
+    ax2.plot(median_results[params['vary_param']], -np.log10(median_results['p_pca']), label='PCA GWAS', marker='^')
+    ax2.plot(median_results[params['vary_param']], -np.log10(median_results['p_lasso']), label='Lasso GWAS', marker='D')
+    ax2.set_xlabel(params['vary_param'])
     ax2.set_ylabel('Median -log10(p-value)')
     ax2.set_title(f'Median Significance vs {params["vary_param"]} ({num_repeats} repeats)')
     ax2.legend()
@@ -981,23 +1003,24 @@ def main():
     
     # Simulation parameters
     params = {
-        'n_base_seqs': 20,        # Number of base sequences forming the backbone of the pangenome graph
-        'seq_length': 200,        # Length of each base sequence
-        'n_variants': 100,        # Number of variant sequences to generate (randomly mutated from base sequences)
-        'n_individuals': 1000,    # Initial number of individuals to simulate
-        'max_individuals': 100000, # Maximum number of individuals
+        'n_base_seqs': 25,        # Number of base sequences forming the backbone of the pangenome graph
+        'seq_length': 180,        # Length of each base sequence
+        'n_variants': 80,        # Number of variant sequences to generate (randomly mutated from base sequences)
+        #'n_individuals': 10000,    # Initial number of individuals to simulate
+        'n_individuals': int(3000 * (1 + (hash(time.time()) % 600 - 300) / 10000)),  # Slightly varied number of individuals based on time seed
+        'max_individuals': 11000,  # Maximum number of individuals
         'n_dimensions': 50,       # Number of dimensions for eigenvector decomposition (max: number of graph nodes)
         'n_components': 50,       # Number of principal components to use in PCA GWAS
-        'n_snps': 100,            # Number of single nucleotide polymorphisms (SNPs) that may influence phenotype
+        'n_snps': 50,            # Number of single nucleotide polymorphisms (SNPs) that may influence phenotype
         'snp_weight': 1.0,        # Weight of SNP effects on phenotype
         'random_snp_ratio': 0.95, # Ratio of random SNPs to sequence-based SNPs
         'min_individuals': 15,    # Minimum number of individuals
         'num_steps': 20,          # Number of steps between min and max individuals for scaling
-        'test_size': 0.5,         # Proportion of data to use as test set in train-test split
+        'test_size': 0.3,         # Proportion of data to use as test set in train-test split
         'min_cluster_size': 5,    # Minimum cluster size for HDBSCAN clustering algorithm
-        'seed': int(time.time()),  # Random seed based on current time
+        'seed': int(time.time()), # Random seed based on current time
         'suppress_plot': True,    # Whether to suppress plot display
-        'vary_param': 'n_individuals', # Parameter to vary in scaling experiments
+        'vary_param': 'random_snp_ratio', # Parameter to vary in scaling experiments
         'csv_filename': 'simulation_results.csv' # Filename for saving simulation results
     }
 
@@ -1006,7 +1029,11 @@ def main():
         print(f"{key}: {value}")
 
     print("Starting pangenome GWAS simulation...")
-    num_repeats = 5
+    num_repeats = 10
+    params['vary_param'] = 'random_snp_ratio'
+    params['min_random_snp_ratio'] = 0.75
+    params['max_random_snp_ratio'] = 0.99
+    params['num_steps'] = 20
     run_multiple_simulations(params, num_repeats)
     print("Simulation completed. Check the generated plots and CSV files for results.")
 
