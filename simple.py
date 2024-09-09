@@ -17,17 +17,20 @@ def create_sequence(length: int) -> np.ndarray:
     """Create a random binary sequence of given length."""
     return np.random.randint(0, 2, size=length)
 
-def create_pangenome_graph(n_base_seqs: int, seq_length: int, n_variants: int) -> Tuple[nx.DiGraph, Dict[str, np.ndarray], Dict[str, np.ndarray]]:
+def create_pangenome_graph(n_base_seqs: int, seq_length: int, n_variants: int, 
+                           prob_stay_base: float, prob_modification: float) -> Tuple[nx.DiGraph, Dict[str, np.ndarray], Dict[str, np.ndarray]]:
     """Create a pangenome graph with SNP positions for each node."""
     G = nx.DiGraph()
     sequences = {}
     snp_positions = {}
     
+    prob_insertion = 1 - prob_modification
+    
     # Create base sequences
     for i in range(n_base_seqs):
         seq = create_sequence(seq_length)
         node_name = f"base_{i}"
-        G.add_node(node_name, sequence=seq, weight=np.random.uniform(0.5, 1.0))
+        G.add_node(node_name, sequence=seq, weight=np.random.uniform(prob_stay_base, 1.0))
         sequences[node_name] = seq
         snp_positions[node_name] = np.sort(np.random.choice(seq_length, size=n_variants, replace=False))
         if i > 0:
@@ -35,7 +38,7 @@ def create_pangenome_graph(n_base_seqs: int, seq_length: int, n_variants: int) -
 
     # Create variants (modifications and insertions)
     for i in range(n_variants):
-        if np.random.random() < 0.7:  # 70% chance of modification, 30% chance of insertion
+        if np.random.random() < prob_modification:  # Chance of modification
             base_node = np.random.choice([node for node in G.nodes() if node.startswith('base_')])
             base_seq = sequences[base_node]
             var_seq = base_seq.copy()
@@ -46,7 +49,7 @@ def create_pangenome_graph(n_base_seqs: int, seq_length: int, n_variants: int) -
             var_seq[mutation_positions] = 1 - var_seq[mutation_positions]
             
             node_name = f"variant_{i}"
-            G.add_node(node_name, sequence=var_seq, weight=np.random.uniform(0.1, 0.5))
+            G.add_node(node_name, sequence=var_seq, weight=np.random.uniform(0.1, prob_stay_base))
             sequences[node_name] = var_seq
             
             # Inherit some SNPs, remove some, and add new ones
@@ -59,7 +62,7 @@ def create_pangenome_graph(n_base_seqs: int, seq_length: int, n_variants: int) -
             # Create a completely new insertion
             insert_seq = create_sequence(seq_length)
             node_name = f"insertion_{i}"
-            G.add_node(node_name, sequence=insert_seq, weight=np.random.uniform(0.05, 0.2))
+            G.add_node(node_name, sequence=insert_seq, weight=np.random.uniform(0.05, 0.1))
             sequences[node_name] = insert_seq
             snp_positions[node_name] = np.sort(np.random.choice(seq_length, size=n_variants, replace=False))
             
@@ -168,9 +171,11 @@ def predict(X: List[np.ndarray], betas: np.ndarray, top_k: int) -> np.ndarray:
         predictions.append(pred)
     return stats.zscore(np.array(predictions))
 
+
 def run_simulation(n_base_seqs: int, seq_length: int, n_variants: int, n_individuals: int, 
-                   test_size: float, top_k: int) -> Tuple[float, float, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    G, sequences, snp_positions = create_pangenome_graph(n_base_seqs, seq_length, n_variants)
+                   test_size: float, top_k: int, p_stay: float, p_alt: float, p_ins: float) -> Tuple[float, float, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    prob_modification = p_alt + p_ins
+    G, sequences, snp_positions = create_pangenome_graph(n_base_seqs, seq_length, n_variants, p_stay, prob_modification)
 
     L = compute_laplacian(G)
     eigenvectors = compute_eigenvectors(L, top_k)
@@ -201,11 +206,15 @@ def main():
     seq_length = 400
     n_variants = 160
     test_size = 0.5
-    top_k = 200
+    top_k = int(1e9)
     n_individuals = 80000
+    p_stay = 1.0  # Probability of staying in base sequence
+    p_alt = 0.0   # Probability of having an alternative
+    p_ins = 0.0   # Probability of having an insertion
     
     try:
-        r_normal, r_eigen, y_test, y_pred_normal, y_pred_eigen, phenotypes = run_simulation(n_base_seqs, seq_length, n_variants, n_individuals, test_size, top_k)
+        r_normal, r_eigen, y_test, y_pred_normal, y_pred_eigen, phenotypes = run_simulation(
+            n_base_seqs, seq_length, n_variants, n_individuals, test_size, top_k, p_stay, p_alt, p_ins)
 
         print(f"Results for {n_individuals} individuals:")
         print(f"Correlation (Normal GWAS): {r_normal}")
