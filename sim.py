@@ -1015,7 +1015,7 @@ def main():
         'snp_weight': 1.0,        # Weight of SNP effects on phenotype
         'random_snp_ratio': 0.95, # Ratio of random SNPs to sequence-based SNPs
         'min_individuals': 15,    # Minimum number of individuals
-        'num_steps': 20,          # Number of steps between min and max individuals for scaling
+        'num_steps': 40,          # Number of steps between min and max individuals for scaling
         'test_size': 0.3,         # Proportion of data to use as test set in train-test split
         'min_cluster_size': 5,    # Minimum cluster size for HDBSCAN clustering algorithm
         'seed': int(time.time()), # Random seed based on current time
@@ -1029,11 +1029,11 @@ def main():
         print(f"{key}: {value}")
 
     print("Starting pangenome GWAS simulation...")
-    num_repeats = 10
+    num_repeats = 20
     params['vary_param'] = 'random_snp_ratio'
-    params['min_random_snp_ratio'] = 0.75
+    params['min_random_snp_ratio'] = 0.6
     params['max_random_snp_ratio'] = 0.99
-    params['num_steps'] = 20
+    params['num_steps'] = 40
     run_multiple_simulations(params, num_repeats)
     print("Simulation completed. Check the generated plots and CSV files for results.")
 
